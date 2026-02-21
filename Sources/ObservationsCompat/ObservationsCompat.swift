@@ -73,9 +73,11 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
     let stream = AsyncStream<Value> { continuation in
         let pendingChanges = PendingChangeCounter()
         let (changeWakes, changeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observeIsolation = observe.isolation
         let task = Task {
             await runLegacyProducer(
                 observe: observe,
+                observeIsolation: observeIsolation,
                 changeWakes: changeWakes,
                 pendingChanges: pendingChanges,
                 changeSignal: changeSignal,
@@ -91,18 +93,9 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
     return ObservationsCompatStream(stream: stream)
 }
 
-@inline(__always)
-private func invokeIsolatedObserve<Value: Sendable>(
-    _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> Value {
-    typealias IsolatedObserve = @isolated(any) @Sendable () -> Value
-    typealias NonisolatedObserve = @Sendable () -> Value
-    let raw = unsafeBitCast(observe as IsolatedObserve, to: NonisolatedObserve.self)
-    return raw()
-}
-
 private func runLegacyProducer<Value: Sendable & Equatable>(
     observe: @escaping @isolated(any) @Sendable () -> Value,
+    observeIsolation: (any Actor)?,
     changeWakes: AsyncStream<Void>,
     pendingChanges: PendingChangeCounter,
     changeSignal: AsyncStream<Void>.Continuation,
@@ -120,36 +113,49 @@ private func runLegacyProducer<Value: Sendable & Equatable>(
         continuation.yield(value)
     }
 
-    func registerTracking() {
-        let result = withObservationTracking({
-            Result(catching: {
-                invokeIsolatedObserve(observe)
-            })
-        }, onChange: {
-            pendingChanges.increment()
-            changeSignal.yield(())
-        })
-        switch result {
-        case .success(let value):
-            emitIfNeeded(value)
-        case .failure:
-            preconditionFailure("observe closure unexpectedly threw")
-        }
+    func registerTracking() async {
+        let value = await trackLegacyValue(
+            isolation: observeIsolation,
+            observe: observe,
+            pendingChanges: pendingChanges,
+            changeSignal: changeSignal
+        )
+        emitIfNeeded(value)
     }
 
-    registerTracking()
+    await registerTracking()
     for await _ in changeWakes {
         if Task.isCancelled {
             break
         }
         var remaining = pendingChanges.takeAll()
         while remaining > 0 {
-            registerTracking()
+            await registerTracking()
             remaining -= 1
         }
     }
     changeSignal.finish()
     continuation.finish()
+}
+
+private func trackLegacyValue<Value: Sendable>(
+    isolation _: isolated (any Actor)?,
+    observe: @escaping @isolated(any) @Sendable () -> Value,
+    pendingChanges: PendingChangeCounter,
+    changeSignal: AsyncStream<Void>.Continuation
+) -> Value {
+    let result = withObservationTracking({
+        Result(catching: observe)
+    }, onChange: {
+        pendingChanges.increment()
+        changeSignal.yield(())
+    })
+    switch result {
+    case .success(let value):
+        return value
+    case .failure:
+        preconditionFailure("observe closure unexpectedly threw")
+    }
 }
 
 private final class PendingChangeCounter: Sendable {

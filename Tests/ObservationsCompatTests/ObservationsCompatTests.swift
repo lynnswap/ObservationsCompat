@@ -175,6 +175,32 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func legacyBackendPreservesObserveIsolationAcrossDetachedCreation() async {
+        let model = CounterModel()
+        let observeOnMainActor: @MainActor @Sendable () -> Int = {
+            MainActor.assertIsolated()
+            return model.value
+        }
+        let observe: @isolated(any) @Sendable () -> Int = observeOnMainActor
+        let stream = await Task.detached {
+            makeObservationsCompatStream(backend: .legacy, observe)
+        }.value
+        let queue = ValueQueue<Int>()
+        let consumer = Task.detached(priority: nil) {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 11
+        #expect(await nextWithTimeout(from: queue) == 11)
+    }
+
+    @Test
     func streamCanBeCancelledSafely() async {
         let model = CounterModel()
         let stream = makeObservationsCompatStream(backend: .legacy) {
