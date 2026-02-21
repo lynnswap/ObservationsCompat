@@ -1,6 +1,6 @@
 # ObservationsCompat
 
-`ObservationsCompat` is a small compatibility layer for Swift Observation streams.
+`ObservationsCompat` is a lightweight compatibility layer for Swift Observations.
 
 It provides a single async-sequence API that:
 
