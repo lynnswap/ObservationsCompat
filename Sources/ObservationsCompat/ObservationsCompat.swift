@@ -144,6 +144,9 @@ private func trackLegacyValue<Value: Sendable>(
     pendingChanges: PendingChangeCounter,
     changeSignal: AsyncStream<Void>.Continuation
 ) -> Value {
+    // Keep this aligned with Swift stdlib Observation (`Observations.swift`):
+    // `Result(catching:)` inside `withObservationTracking` currently emits an
+    // `@isolated(any)` conversion warning, but avoids isolation bypasses such as `unsafeBitCast`.
     let result = withObservationTracking({
         Result(catching: observe)
     }, onChange: {
