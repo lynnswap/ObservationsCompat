@@ -73,11 +73,11 @@ public extension Observable where Self: AnyObject {
     }
 
     @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
+    func observe(
+        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable ([Value]) -> Void
+        onChange: @escaping @Sendable () -> Void
     ) -> ObservationHandle {
         observe(
             keyPaths,
@@ -89,43 +89,11 @@ public extension Observable where Self: AnyObject {
     }
 
     @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
+    func observeTask(
+        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable ([Value]) -> Void
-    ) -> ObservationHandle {
-        observe(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            removeDuplicates: removeDuplicates,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
-        retention: ObservationRetention = .automatic,
-        removeDuplicates: Bool = false,
-        task: @escaping @Sendable ([Value]) async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            removeDuplicates: removeDuplicates,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
-        retention: ObservationRetention = .automatic,
-        removeDuplicates: Bool = false,
-        task: @escaping @Sendable ([Value]) async -> Void
+        task: @escaping @Sendable () async -> Void
     ) -> ObservationHandle {
         observeTask(
             keyPaths,
@@ -217,15 +185,15 @@ public extension Observable where Self: AnyObject {
     }
 
     @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
+    func observe(
+        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable ([Value]) -> Void
+        onChange: @escaping @Sendable () -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
-            preconditionFailure("removeDuplicates requires Value to conform to Equatable")
+            preconditionFailure("removeDuplicates is not supported for multiple key path trigger observation")
         }
 
         return observeImpl(
@@ -233,39 +201,23 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            of: makeKeyPathsGetter(keyPaths),
-            onChange: makeOnChangeAdapter(onChange)
+            of: makeAnyKeyPathsTriggerGetter(keyPaths),
+            onChange: { _ in
+                onChange()
+            }
         )
     }
 
     @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
+    func observeTask(
+        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable ([Value]) -> Void
-    ) -> ObservationHandle {
-        observeImpl(
-            owner: self,
-            backend: backend,
-            retention: retention,
-            duplicateFilter: removeDuplicates ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            of: makeKeyPathsGetter(keyPaths),
-            onChange: makeOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
-        backend: ObservationsCompatBackend,
-        retention: ObservationRetention = .automatic,
-        removeDuplicates: Bool = false,
-        task: @escaping @Sendable ([Value]) async -> Void
+        task: @escaping @Sendable () async -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
-            preconditionFailure("removeDuplicates requires Value to conform to Equatable")
+            preconditionFailure("removeDuplicates is not supported for multiple key path trigger observation")
         }
 
         return observeTaskImpl(
@@ -273,26 +225,10 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            of: makeKeyPathsGetter(keyPaths),
-            task: makeTaskAdapter(task)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPaths: sending [any KeyPath<Self, Value> & Sendable],
-        backend: ObservationsCompatBackend,
-        retention: ObservationRetention = .automatic,
-        removeDuplicates: Bool = false,
-        task: @escaping @Sendable ([Value]) async -> Void
-    ) -> ObservationHandle {
-        observeTaskImpl(
-            owner: self,
-            backend: backend,
-            retention: retention,
-            duplicateFilter: removeDuplicates ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            of: makeKeyPathsGetter(keyPaths),
-            task: makeTaskAdapter(task)
+            of: makeAnyKeyPathsTriggerGetter(keyPaths),
+            task: { _ in
+                await task()
+            }
         )
     }
 }
@@ -306,13 +242,13 @@ private func makeKeyPathGetter<Owner: AnyObject, Value: Sendable>(
     }
 }
 
-private func makeKeyPathsGetter<Owner: AnyObject, Value: Sendable>(
-    _ keyPaths: sending [any KeyPath<Owner, Value> & Sendable]
-) -> @isolated(any) @Sendable (Owner) -> [Value] {
+private func makeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
+    _ keyPaths: sending [any PartialKeyPath<Owner> & Sendable]
+) -> @isolated(any) @Sendable (Owner) -> Void {
     let keyPaths = keyPaths
     return { owner in
-        keyPaths.map { keyPath in
-            owner[keyPath: keyPath]
+        for keyPath in keyPaths {
+            _ = owner[keyPath: keyPath]
         }
     }
 }

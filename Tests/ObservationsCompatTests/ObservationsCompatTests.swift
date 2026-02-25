@@ -207,23 +207,6 @@ private func waitUntilCount<Value: Sendable>(
     return reached == true
 }
 
-private func waitUntilLastValue<Value: Sendable & Equatable>(
-    _ expectedValue: Value,
-    in recorder: ValueRecorder<Value>,
-    nanoseconds: UInt64 = 5_000_000_000
-) async -> Bool {
-    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
-        while recorder.snapshot().last != expectedValue {
-            if Task.isCancelled {
-                return false
-            }
-            await Task.yield()
-        }
-        return true
-    }
-    return reached == true
-}
-
 @available(iOS 26.0, macOS 26.0, *)
 private actor StressFailureRecorder {
     private var firstFailureMessage: String?
@@ -569,21 +552,40 @@ struct ObservationsCompatTests {
     @Test
     func observeTaskSupportsMultipleKeyPaths() async {
         let model = CounterModel()
-        let recorder = ValueRecorder<[Int]>()
+        let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask([\.value, \.secondaryValue], retention: .manual) { values in
-            recorder.append(values)
+        let handle = model.observeTask([\.value, \.isEnabled], retention: .manual) {
+            recorder.append(1)
         }
         defer { handle.cancel() }
 
         #expect(await waitUntilCount(1, in: recorder))
-        #expect(recorder.snapshot().first == [0, 0])
+        #expect(recorder.count() == 1)
 
         model.value = 4
-        #expect(await waitUntilLastValue([4, 0], in: recorder))
+        #expect(await waitUntilCount(2, in: recorder))
 
-        model.secondaryValue = 9
-        #expect(await waitUntilLastValue([4, 9], in: recorder))
+        model.isEnabled = true
+        #expect(await waitUntilCount(3, in: recorder))
+    }
+
+    @Test
+    func observeSupportsMultipleKeyPathsAsTriggerOnly() async {
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe([\.value, \.isEnabled], retention: .manual) {
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 4
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.isEnabled = true
+        #expect(await waitUntilCount(3, in: recorder))
     }
 
     @Test

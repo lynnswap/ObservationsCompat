@@ -45,8 +45,8 @@ model.observeTask(\.count) { value in
 ### Multiple key paths
 
 ```swift
-model.observeTask([\.count, \.retryCount]) { values in
-    await analytics.trackCounts(values)
+model.observeTask([\.count, \.isEnabled]) {
+    await analytics.trackStateChanged()
 }
 ```
 
