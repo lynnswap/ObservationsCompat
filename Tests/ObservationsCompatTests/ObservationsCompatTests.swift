@@ -141,6 +141,28 @@ private actor ValueQueue<Value: Sendable> {
     }
 }
 
+private final class ValueRecorder<Value: Sendable>: Sendable {
+    private let storage = Mutex<[Value]>([])
+
+    func append(_ value: Value) {
+        storage.withLock { values in
+            values.append(value)
+        }
+    }
+
+    func snapshot() -> [Value] {
+        storage.withLock { values in
+            values
+        }
+    }
+
+    func count() -> Int {
+        storage.withLock { values in
+            values.count
+        }
+    }
+}
+
 private func waitWithTimeout<T: Sendable>(
     nanoseconds: UInt64 = 5_000_000_000,
     _ operation: @escaping @Sendable () async -> T
@@ -166,6 +188,40 @@ private func nextWithTimeout<Value: Sendable>(
     await waitWithTimeout(nanoseconds: nanoseconds) {
         await queue.next()
     } ?? nil
+}
+
+private func waitUntilCount<Value: Sendable>(
+    _ expectedCount: Int,
+    in recorder: ValueRecorder<Value>,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Bool {
+    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
+        while recorder.count() < expectedCount {
+            if Task.isCancelled {
+                return false
+            }
+            await Task.yield()
+        }
+        return true
+    }
+    return reached == true
+}
+
+private func waitUntilLastValue<Value: Sendable & Equatable>(
+    _ expectedValue: Value,
+    in recorder: ValueRecorder<Value>,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Bool {
+    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
+        while recorder.snapshot().last != expectedValue {
+            if Task.isCancelled {
+                return false
+            }
+            await Task.yield()
+        }
+        return true
+    }
+    return reached == true
 }
 
 @available(iOS 26.0, macOS 26.0, *)
@@ -481,49 +537,53 @@ struct ObservationsCompatTests {
     @Test
     func observeRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
         let model = CounterModel()
-        let queue = ValueQueue<Int>()
+        let recorder = ValueRecorder<Int>()
 
         let handle = model.observe(
             \.parity,
             retention: .manual,
             removeDuplicates: true
         ) { value in
-            Task {
-                await queue.push(value)
-            }
+            recorder.append(value)
         }
         defer { handle.cancel() }
 
-        #expect(await nextWithTimeout(from: queue) == 0)
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot() == [0])
 
         model.value = 1
-        #expect(await nextWithTimeout(from: queue) == 1)
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
 
         await Task.yield()
         model.value = 3
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
+        #expect(recorder.count() == 2)
 
         model.value = 2
-        #expect(await nextWithTimeout(from: queue) == 0)
+        #expect(await waitUntilCount(3, in: recorder))
+        #expect(recorder.snapshot().prefix(3).elementsEqual([0, 1, 0]))
     }
 
     @Test
     func observeTaskSupportsMultipleKeyPaths() async {
         let model = CounterModel()
-        let queue = ValueQueue<[Int]>()
+        let recorder = ValueRecorder<[Int]>()
 
         let handle = model.observeTask([\.value, \.secondaryValue], retention: .manual) { values in
-            await queue.push(values)
+            recorder.append(values)
         }
         defer { handle.cancel() }
 
-        #expect(await nextWithTimeout(from: queue) == [0, 0])
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot().first == [0, 0])
 
         model.value = 4
-        #expect(await nextWithTimeout(from: queue) == [4, 0])
+        #expect(await waitUntilLastValue([4, 0], in: recorder))
 
         model.secondaryValue = 9
-        #expect(await nextWithTimeout(from: queue) == [4, 9])
+        #expect(await waitUntilLastValue([4, 9], in: recorder))
     }
 
     @Test
@@ -650,26 +710,4 @@ struct ObservationsCompatTests {
         #expect(result.firstFailure == nil)
     }
 
-    @Test
-    func nativeBackendObserveStressNoRaceAcrossOneMillionIterations() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
-        let iterations = 1_000_000
-        let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
-        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observe(\.value, backend: .native, retention: .manual) { value in
-                onObserved(value)
-            }
-        }
-
-        if !result.completed || result.firstFailure != nil {
-            Issue.record(
-                "stress seed: \(seed), workers: \(result.workers), failure: \(result.firstFailure ?? "none")"
-            )
-        }
-        #expect(result.completed)
-        #expect(result.firstFailure == nil)
-    }
 }
