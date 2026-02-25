@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		F0A100000000000000000001 /* ObservationsCompat in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* ObservationsCompat */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		AB9693312F4F379B00DA34DE /* MiniApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MiniApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0A100000000000000000001 /* ObservationsCompat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = MiniApp;
 			packageProductDependencies = (
+				F0A100000000000000000003 /* ObservationsCompat */,
 			);
 			productName = MiniApp;
 			productReference = AB9693312F4F379B00DA34DE /* MiniApp.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = AB9693282F4F379B00DA34DE;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F0A100000000000000000002 /* XCLocalSwiftPackageReference ".." */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AB9693322F4F379B00DA34DE /* Products */;
 			projectDirPath = "";
@@ -276,7 +285,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -320,7 +329,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -351,6 +360,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F0A100000000000000000002 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F0A100000000000000000003 /* ObservationsCompat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference ".." */;
+			productName = ObservationsCompat;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AB9693292F4F379B00DA34DE /* Project object */;
 }
