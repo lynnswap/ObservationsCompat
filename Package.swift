@@ -17,6 +17,7 @@ let package = Package(
     targets: [
         .target(
             name: "ObservationsCompatLegacy",
+            path: "ObservationsCompat/Sources/ObservationsCompatLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
@@ -26,6 +27,7 @@ let package = Package(
         .target(
             name: "ObservationsCompat",
             dependencies: ["ObservationsCompatLegacy"],
+            path: "ObservationsCompat/Sources/ObservationsCompat",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
@@ -36,6 +38,7 @@ let package = Package(
         .testTarget(
             name: "ObservationsCompatTests",
             dependencies: ["ObservationsCompat"],
+            path: "ObservationsCompat/Tests/ObservationsCompatTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
