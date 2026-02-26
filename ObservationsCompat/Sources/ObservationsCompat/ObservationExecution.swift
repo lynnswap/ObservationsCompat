@@ -317,11 +317,11 @@ private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     )
 }
 
-private func makeDebouncedValueStream<Value: Sendable>(
-    _ source: AsyncChannel<Value>,
+func makeDebouncedValueStream<S: AsyncSequence & Sendable>(
+    _ source: S,
     debounce: ObservationDebounce,
     debounceClock: any Clock<Duration>
-) -> AsyncStream<Value> {
+) -> AsyncStream<S.Element> where S.Element: Sendable {
     makeDebouncedValueStream(
         source,
         debounce: debounce,
@@ -329,26 +329,30 @@ private func makeDebouncedValueStream<Value: Sendable>(
     )
 }
 
-private func makeDebouncedValueStream<Value: Sendable, C: Clock<Duration>>(
-    _ source: AsyncChannel<Value>,
+func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
+    _ source: S,
     debounce: ObservationDebounce,
     clock: C
-) -> AsyncStream<Value> {
+) -> AsyncStream<S.Element> where S.Element: Sendable {
     switch debounce.mode {
     case .delayedFirst:
         return AsyncStream { continuation in
             let task = Task {
-                for await value in source.debounce(
-                    for: debounce.interval,
-                    tolerance: debounce.tolerance,
-                    clock: clock
-                ) {
-                    guard !Task.isCancelled else {
-                        break
+                do {
+                    for try await value in source.debounce(
+                        for: debounce.interval,
+                        tolerance: debounce.tolerance,
+                        clock: clock
+                    ) {
+                        guard !Task.isCancelled else {
+                            break
+                        }
+                        continuation.yield(value)
                     }
-                    continuation.yield(value)
+                    continuation.finish()
+                } catch {
+                    preconditionFailure("debounce source unexpectedly threw")
                 }
-                continuation.finish()
             }
 
             continuation.onTermination = { _ in
@@ -358,31 +362,36 @@ private func makeDebouncedValueStream<Value: Sendable, C: Clock<Duration>>(
     case .immediateFirst:
         return AsyncStream { continuation in
             let task = Task {
-                let (remainingStream, remainingContinuation) = AsyncStream<Value>.makeStream(
+                let (remainingStream, remainingContinuation) = AsyncStream<S.Element>.makeStream(
                     bufferingPolicy: .bufferingNewest(1)
                 )
                 let producerTask = Task {
-                    var iterator = source.makeAsyncIterator()
-                    guard let firstValue = await iterator.next() else {
-                        remainingContinuation.finish()
-                        return
-                    }
-
-                    guard !Task.isCancelled else {
-                        remainingContinuation.finish()
-                        return
-                    }
-
-                    continuation.yield(firstValue)
-
-                    while let nextValue = await iterator.next() {
-                        guard !Task.isCancelled else {
-                            break
+                    do {
+                        var iterator = source.makeAsyncIterator()
+                        guard let firstValue = try await iterator.next() else {
+                            remainingContinuation.finish()
+                            return
                         }
-                        remainingContinuation.yield(nextValue)
-                    }
 
-                    remainingContinuation.finish()
+                        guard !Task.isCancelled else {
+                            remainingContinuation.finish()
+                            return
+                        }
+
+                        continuation.yield(firstValue)
+
+                        while let nextValue = try await iterator.next() {
+                            guard !Task.isCancelled else {
+                                break
+                            }
+                            remainingContinuation.yield(nextValue)
+                        }
+
+                        remainingContinuation.finish()
+                    } catch {
+                        remainingContinuation.finish()
+                        preconditionFailure("debounce source unexpectedly threw")
+                    }
                 }
 
                 for await value in remainingStream.debounce(
