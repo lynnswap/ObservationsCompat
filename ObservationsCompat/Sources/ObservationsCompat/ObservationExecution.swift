@@ -1,3 +1,4 @@
+import AsyncAlgorithms
 import Observation
 import ObservationsCompatLegacy
 import Synchronization
@@ -5,6 +6,11 @@ import Synchronization
 private enum OwnerValueEmission<Value: Sendable>: Sendable {
     case value(Value)
     case ownerGone
+}
+
+private struct ObservedValueChannel<Value: Sendable>: Sendable {
+    let channel: AsyncChannel<Value>
+    let producerTask: Task<Void, Never>
 }
 
 private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
@@ -20,23 +26,40 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     backend: ObservationsCompatBackend,
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
+    debounce: ObservationDebounce?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let monitorTask = Task {
-        await forEachOwnerValueEmission(
+        let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             backend: backend,
             duplicateFilter: duplicateFilter,
             of: value
-        ) { emission in
-            switch emission {
-            case .ownerGone:
-                return false
-            case .value(let observedValue):
+        )
+        defer {
+            observedValues.producerTask.cancel()
+            observedValues.channel.finish()
+        }
+
+        if let debounce {
+            let debouncedStream = makeDebouncedValueStream(
+                observedValues.channel,
+                debounce: debounce
+            )
+            for await observedValue in debouncedStream {
+                guard !Task.isCancelled else {
+                    break
+                }
                 await onChange(observedValue)
-                return true
+            }
+        } else {
+            for await observedValue in observedValues.channel {
+                guard !Task.isCancelled else {
+                    break
+                }
+                await onChange(observedValue)
             }
         }
     }
@@ -56,6 +79,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     backend: ObservationsCompatBackend,
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
+    debounce: ObservationDebounce?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -167,21 +191,39 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     }
 
     let monitorTask = Task {
-        await forEachOwnerValueEmission(
+        let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             backend: backend,
             duplicateFilter: duplicateFilter,
             of: value
-        ) { emission in
-            let observedValue: Value
-            switch emission {
-            case .ownerGone:
-                return false
-            case .value(let value):
-                observedValue = value
-            }
+        )
+        defer {
+            observedValues.producerTask.cancel()
+            observedValues.channel.finish()
+        }
 
-            return enqueueLatestValue(observedValue)
+        if let debounce {
+            let debouncedStream = makeDebouncedValueStream(
+                observedValues.channel,
+                debounce: debounce
+            )
+            for await observedValue in debouncedStream {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard enqueueLatestValue(observedValue) else {
+                    break
+                }
+            }
+        } else {
+            for await observedValue in observedValues.channel {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard enqueueLatestValue(observedValue) else {
+                    break
+                }
+            }
         }
 
         shutdownObserveTaskExecution()
@@ -197,6 +239,119 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     }
 
     return applyRetention(handle, owner: owner, retention: retention)
+}
+
+private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
+    ownerToken: UInt64,
+    backend: ObservationsCompatBackend,
+    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
+) -> ObservedValueChannel<Value> {
+    let channel = AsyncChannel<Value>()
+    let producerTask = Task {
+        await forEachOwnerValueEmission(
+            ownerToken: ownerToken,
+            backend: backend,
+            duplicateFilter: duplicateFilter,
+            of: value
+        ) { emission in
+            switch emission {
+            case .ownerGone:
+                return false
+            case .value(let observedValue):
+                guard !Task.isCancelled else {
+                    return false
+                }
+                await channel.send(observedValue)
+                return !Task.isCancelled
+            }
+        }
+
+        channel.finish()
+    }
+
+    return ObservedValueChannel(
+        channel: channel,
+        producerTask: producerTask
+    )
+}
+
+private func makeDebouncedValueStream<Value: Sendable>(
+    _ source: AsyncChannel<Value>,
+    debounce: ObservationDebounce
+) -> AsyncStream<Value> {
+    switch debounce.mode {
+    case .delayedFirst:
+        return AsyncStream { continuation in
+            let task = Task {
+                for await value in source.debounce(
+                    for: debounce.interval,
+                    tolerance: debounce.tolerance,
+                    clock: .continuous
+                ) {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    continuation.yield(value)
+                }
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    case .immediateFirst:
+        return AsyncStream { continuation in
+            let task = Task {
+                let (remainingStream, remainingContinuation) = AsyncStream<Value>.makeStream(
+                    bufferingPolicy: .bufferingNewest(1)
+                )
+                let producerTask = Task {
+                    var iterator = source.makeAsyncIterator()
+                    guard let firstValue = await iterator.next() else {
+                        remainingContinuation.finish()
+                        return
+                    }
+
+                    guard !Task.isCancelled else {
+                        remainingContinuation.finish()
+                        return
+                    }
+
+                    continuation.yield(firstValue)
+
+                    while let nextValue = await iterator.next() {
+                        guard !Task.isCancelled else {
+                            break
+                        }
+                        remainingContinuation.yield(nextValue)
+                    }
+
+                    remainingContinuation.finish()
+                }
+
+                for await value in remainingStream.debounce(
+                    for: debounce.interval,
+                    tolerance: debounce.tolerance,
+                    clock: .continuous
+                ) {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    continuation.yield(value)
+                }
+
+                producerTask.cancel()
+                await producerTask.value
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
 }
 
 private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(

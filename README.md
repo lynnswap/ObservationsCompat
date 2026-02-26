@@ -20,7 +20,7 @@ It provides two usage styles:
 ```swift
 import ObservationsCompat
 
-model.observe(\.count) { value in
+model.observe(\.count, options: []) { value in
     print("count = \(value)")
 }
 ```
@@ -30,7 +30,7 @@ model.observe(\.count) { value in
 ```swift
 import ObservationsCompat
 
-model.observeTask(\.count) { value in
+model.observeTask(\.count, options: []) { value in
     await analytics.trackCount(value)
 }
 ```
@@ -38,21 +38,53 @@ model.observeTask(\.count) { value in
 ### Multiple key paths (trigger-only)
 
 ```swift
-model.observeTask([\.count, \.isEnabled]) {
+model.observeTask([\.count, \.isEnabled], options: []) {
     await analytics.trackStateChanged()
 }
 ```
 
-### Duplicate suppression (`Equatable` values)
+### Multiple key paths with value projection
+
+```swift
+model.observeTask(
+    [\.count, \.isEnabled],
+    options: [.removeDuplicates],
+    of: { owner in
+        (owner.count, owner.isEnabled)
+    }
+) { state in
+    await analytics.trackState(state)
+}
+```
+
+### Option flags (`ObservationOptions`)
 
 ```swift
 model.observe(
     \.count,
-    removeDuplicates: true
+    options: [.removeDuplicates]
 ) { value in
     print(value)
 }
 ```
+
+### Debounce
+
+```swift
+let debounce = ObservationDebounce(
+    interval: .milliseconds(250),
+    mode: .immediateFirst // default
+)
+
+model.observeTask(
+    \.count,
+    options: [.debounce(debounce)]
+) { value in
+    await analytics.trackCount(value)
+}
+```
+
+`ObservationDebounce` uses millisecond precision. Sub-millisecond durations are rounded to the nearest millisecond.
 
 If you need explicit lifecycle control, use `.manual` retention and keep the returned handle:
 
@@ -60,7 +92,7 @@ If you need explicit lifecycle control, use `.manual` retention and keep the ret
 let handle = model.observe(
     \.count,
     retention: .manual,
-    removeDuplicates: true
+    options: [.removeDuplicates]
 ) { value in
     print(value)
 }
@@ -103,7 +135,8 @@ Both APIs:
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
 - auto-cancel when the owner is released (`retention: .automatic`, default)
-- optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
+- optionally support duplicate suppression for `Equatable` values (`options: [.removeDuplicates]`)
+- optionally support debounce (`options: [.debounce(ObservationDebounce(...))]`)
 
 Legacy backend behavior note:
 
