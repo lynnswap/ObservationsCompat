@@ -57,39 +57,21 @@ model.observeTask(
 }
 ```
 
-### Option flags (`ObservationOptions`)
+## Configuration
 
-```swift
-model.observe(
-    \.count,
-    options: [.removeDuplicates]
-) { value in
-    print(value)
-}
-```
+### Options
 
-### Debounce
+Available options:
 
-```swift
-let debounce = ObservationDebounce(
-    interval: .milliseconds(250),
-    mode: .immediateFirst // default
-)
+- `.removeDuplicates`: suppresses consecutive equal values.
+- `.debounce(ObservationDebounce)`: coalesces high-frequency updates and emits on debounce boundaries.
+- `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
 
-model.observeTask(
-    \.count,
-    options: [.debounce(debounce)]
-) { value in
-    await analytics.trackCount(value)
-}
-```
+When both options are used together, duplicate suppression is applied to debounced outputs.
 
-`ObservationDebounce` uses millisecond precision. Sub-millisecond durations are rounded to the nearest millisecond.
+### Clock
 
-### Deterministic testing with standard Clock
-
-`observe` / `observeTask` also accept `clock: any Clock<Duration>`.
-By default it uses `ContinuousClock()` and keeps the existing behavior.
+#### Deterministic testing
 
 In tests, pass your own `Clock` implementation to drive debounce timing manually:
 
@@ -97,31 +79,15 @@ In tests, pass your own `Clock` implementation to drive debounce timing manually
 let clock = MyTestClock() // your Clock implementation for tests
 let debounce = ObservationDebounce(interval: .milliseconds(250), mode: .delayedFirst)
 
-let handle = model.observeTask(
-    \.count,
+let stream = ObservationsCompat(
     options: [.debounce(debounce)],
     clock: clock
-) { value in
-    await recorder.record(value)
+) {
+    model.count
 }
-defer { handle.cancel() }
 
 await clock.sleep(untilSuspendedBy: 1) // helper provided by your test clock
 clock.advance(by: .milliseconds(250))  // deterministic time progression
-```
-
-If you need explicit lifecycle control, use `.manual` retention and keep the returned handle:
-
-```swift
-let handle = model.observe(
-    \.count,
-    retention: .manual,
-    options: [.removeDuplicates]
-) { value in
-    print(value)
-}
-
-handle.cancel()
 ```
 
 ## AsyncSequence Style
@@ -143,7 +109,7 @@ for await value in stream {
 ### `makeObservationsCompatStream`
 
 ```swift
-let stream = makeObservationsCompatStream(backend: .legacy) {
+let stream = makeObservationsCompatStream {
     model.count
 }
 
@@ -159,10 +125,6 @@ Both APIs:
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
 - auto-cancel when the owner is released (`retention: .automatic`, default)
-- optionally support duplicate suppression for `Equatable` values (`options: [.removeDuplicates]`)
-- optionally support debounce (`options: [.debounce(ObservationDebounce(...))]`)
-- debounce time progression follows `clock` (`ContinuousClock` by default)
-- when both `.removeDuplicates` and `.debounce` are enabled, duplicate suppression is applied to debounced outputs
 
 Legacy backend behavior note:
 

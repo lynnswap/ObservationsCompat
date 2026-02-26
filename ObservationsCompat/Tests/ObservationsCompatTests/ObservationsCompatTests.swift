@@ -726,6 +726,195 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observationsCompatOptionsEmptyEmitsConsecutiveEqualValues() async {
+        let model = CounterModel()
+        let stream = ObservationsCompat(backend: .legacy, options: []) {
+            model.parity
+        }
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 3
+        #expect(await nextWithTimeout(from: queue) == 1)
+    }
+
+    @Test
+    func observationsCompatRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
+        let model = CounterModel()
+        let stream = ObservationsCompat(backend: .legacy, options: [.removeDuplicates]) {
+            model.parity
+        }
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 3
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+
+        model.value = 2
+        #expect(await nextWithTimeout(from: queue) == 0)
+    }
+
+    @Test
+    func observationsCompatRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
+        let model = OptionalCounterModel()
+        let stream = ObservationsCompat(backend: .legacy, options: [.removeDuplicates]) {
+            model.value
+        }
+        let queue = ValueQueue<Int?>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationsCompatDebounceImmediateFirstSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let stream = ObservationsCompat(
+            backend: .legacy,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) {
+            model.value
+        }
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        model.value = 3
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 3)
+    }
+
+    @Test
+    func observationsCompatRemoveDuplicatesAppliesToDebouncedOutputs() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let stream = ObservationsCompat(
+            backend: .legacy,
+            options: [.removeDuplicates, .debounce(debounce)],
+            clock: clock
+        ) {
+            model.value
+        }
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 2)
+
+        model.value = 2
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+
+        model.value = 3
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 3)
+    }
+
+    @Test
+    func makeObservationsCompatStreamSupportsOptionsAndClock() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let stream = makeObservationsCompatStream(
+            backend: .legacy,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) {
+            model.value
+        }
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 2)
+    }
+
+    @Test
     func observeEmitsInitialAndDuplicateValuesByDefault() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()

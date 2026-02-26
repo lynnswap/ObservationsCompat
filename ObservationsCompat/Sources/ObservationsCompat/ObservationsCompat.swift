@@ -856,18 +856,80 @@ private func makeOnChangeAdapter<Value>(
 func makeObservationStream<Value: Sendable>(
     backend: ObservationsCompatBackend = .automatic,
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil
+    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
+    debounce: ObservationDebounce? = nil,
+    debounceClock: any Clock<Duration> = ContinuousClock()
+) -> AsyncStream<Value> {
+    let stream = makeRawObservationStream(backend: backend, observe)
+    let streamWithDebounce: AsyncStream<Value>
+    if let debounce {
+        streamWithDebounce = makeDebouncedValueStream(
+            stream,
+            debounce: debounce,
+            debounceClock: debounceClock
+        )
+    } else {
+        streamWithDebounce = stream
+    }
+
+    return makeDuplicateFilteredStream(
+        streamWithDebounce,
+        isDuplicate: duplicateFilter
+    )
+}
+
+private func makeRawObservationStream<Value: Sendable>(
+    backend: ObservationsCompatBackend = .automatic,
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> AsyncStream<Value> {
     switch resolveBackend(backend) {
     case .legacy:
-        return makeLegacyObservationStream(observe, isDuplicate: isDuplicate)
+        return makeLegacyObservationStream(observe, isDuplicate: nil)
     case .native:
         if #available(iOS 26.0, macOS 26.0, *) {
-            return makeNativeStream(observe, isDuplicate: isDuplicate)
+            return makeNativeStream(observe)
         }
-        return makeLegacyObservationStream(observe, isDuplicate: isDuplicate)
+        return makeLegacyObservationStream(observe, isDuplicate: nil)
     case .automatic:
-        return makeLegacyObservationStream(observe, isDuplicate: isDuplicate)
+        return makeLegacyObservationStream(observe, isDuplicate: nil)
+    }
+}
+
+private enum _ObservationStreamPrevious<Value> {
+    case none
+    case value(Value)
+}
+
+private func makeDuplicateFilteredStream<Value: Sendable>(
+    _ source: AsyncStream<Value>,
+    isDuplicate: (@Sendable (Value, Value) -> Bool)?
+) -> AsyncStream<Value> {
+    AsyncStream<Value> { continuation in
+        let task = Task {
+            var previousValue: _ObservationStreamPrevious<Value> = .none
+
+            for await value in source {
+                if Task.isCancelled {
+                    break
+                }
+
+                if case let .value(previous) = previousValue,
+                   let isDuplicate,
+                   isDuplicate(previous, value)
+                {
+                    continue
+                }
+
+                previousValue = .value(value)
+                continuation.yield(value)
+            }
+
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
     }
 }
 
@@ -890,26 +952,16 @@ func resolveBackend(_ backend: ObservationsCompatBackend) -> ObservationsCompatB
 
 @available(iOS 26.0, macOS 26.0, *)
 private func makeNativeStream<Value: Sendable>(
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)?
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
         let task = Task {
-            var previousValue: Value?
-            var hasPreviousValue = false
             let observations = Observations(observe)
 
             for await value in observations {
                 if Task.isCancelled {
                     break
                 }
-
-                if hasPreviousValue, let previousValue, let isDuplicate, isDuplicate(previousValue, value) {
-                    continue
-                }
-
-                hasPreviousValue = true
-                previousValue = value
                 continuation.yield(value)
             }
 
@@ -922,7 +974,7 @@ private func makeNativeStream<Value: Sendable>(
     }
 }
 
-public struct ObservationsCompat<Value: Sendable & Equatable>: AsyncSequence, Sendable {
+public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
     public typealias Element = Value
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -939,15 +991,59 @@ public struct ObservationsCompat<Value: Sendable & Equatable>: AsyncSequence, Se
 
     private let stream: AsyncStream<Value>
 
+    fileprivate init(stream: AsyncStream<Value>) {
+        self.stream = stream
+    }
+
     public init(
         backend: ObservationsCompatBackend = .automatic,
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
-        stream = makeObservationStream(backend: backend, observe, isDuplicate: ==)
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        self.init(stream: makeObservationStream(
+            backend: backend,
+            observe,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
     }
 
     public func makeAsyncIterator() -> Iterator {
         Iterator(base: stream.makeAsyncIterator())
+    }
+}
+
+public extension ObservationsCompat where Value: Equatable {
+    init(
+        backend: ObservationsCompatBackend = .automatic,
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self.init(
+            backend: backend,
+            options: [.removeDuplicates],
+            observe
+        )
+    }
+
+    init(
+        backend: ObservationsCompatBackend = .automatic,
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self.init(stream: makeObservationStream(
+            backend: backend,
+            observe,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
     }
 }
 
@@ -956,4 +1052,32 @@ public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompat<Value> {
     ObservationsCompat(backend: backend, observe)
+}
+
+public func makeObservationsCompatStream<Value: Sendable>(
+    backend: ObservationsCompatBackend = .automatic,
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(
+        backend: backend,
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+public func makeObservationsCompatStream<Value: Sendable & Equatable>(
+    backend: ObservationsCompatBackend = .automatic,
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(
+        backend: backend,
+        options: options,
+        clock: clock,
+        observe
+    )
 }
