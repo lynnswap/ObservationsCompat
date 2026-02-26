@@ -713,6 +713,29 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observationOptionsDebounceNormalizesSubmillisecondDurations() {
+        let submillisecondDebounce = ObservationDebounce(
+            interval: .microseconds(1_400),
+            tolerance: .microseconds(1_600),
+            mode: .delayedFirst
+        )
+        let canonicalDebounce = ObservationDebounce(
+            interval: .milliseconds(1),
+            tolerance: .milliseconds(2),
+            mode: .delayedFirst
+        )
+
+        let submillisecondOptions = ObservationOptions.debounce(submillisecondDebounce)
+        let canonicalOptions: ObservationOptions = [.debounce(canonicalDebounce)]
+
+        #expect(submillisecondOptions.debounce?.interval == .milliseconds(1))
+        #expect(submillisecondOptions.debounce?.tolerance == .milliseconds(2))
+        #expect(submillisecondOptions.contains(canonicalOptions))
+        #expect(canonicalOptions.contains(submillisecondOptions))
+        #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
+    }
+
+    @Test
     func observeMultipleKeyPathValueProjectionSupportsRemoveDuplicates() async {
         let model = CounterModel()
         let recorder = ValueRecorder<CounterSnapshot>()

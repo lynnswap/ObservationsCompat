@@ -63,11 +63,12 @@ public struct ObservationOptions: OptionSet, Sendable {
         removeDuplicates: Bool,
         debounceConfiguration: ObservationDebounce?
     ) {
+        let normalizedDebounceConfiguration = Self.normalizeDebounceConfiguration(debounceConfiguration)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: debounceConfiguration
+            debounceConfiguration: normalizedDebounceConfiguration
         )
-        self.debounceConfiguration = debounceConfiguration
+        self.debounceConfiguration = normalizedDebounceConfiguration
     }
 
     public init(arrayLiteral elements: ObservationOptions...) {
@@ -222,6 +223,14 @@ public struct ObservationOptions: OptionSet, Sendable {
             tolerance: tolerance,
             mode: mode
         )
+    }
+
+    private static func normalizeDebounceConfiguration(_ debounceConfiguration: ObservationDebounce?) -> ObservationDebounce? {
+        guard let debounceConfiguration else {
+            return nil
+        }
+        let encodedRawValue = debounceFlag | encodeDebouncePayload(debounceConfiguration)
+        return decodeDebounceConfiguration(from: encodedRawValue)
     }
 
     private static func encodeDebouncePayload(_ debounceConfiguration: ObservationDebounce) -> UInt64 {
