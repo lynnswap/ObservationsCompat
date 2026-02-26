@@ -35,6 +35,19 @@ model.observeTask(\.count) { value in
 }
 ```
 
+### Early stop with `ObservationHandle`
+
+```swift
+import ObservationsCompat
+
+let handle = model.observe(\.count) { value in
+    print("count = \(value)")
+}
+
+// Stop observation when needed.
+handle.cancel()
+```
+
 ### Multiple key paths (trigger-only)
 
 ```swift
@@ -125,7 +138,7 @@ Both APIs:
 
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
-- auto-cancel when the owner is released (`retention: .automatic`, default)
+- are retained for the owner's lifetime and auto-cancel when the owner is released
 
 Backend behavior note:
 
@@ -134,5 +147,4 @@ Backend behavior note:
 - legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
 - native uses Swift `Observations` transaction semantics; both backends preserve `latest wins` cancellation for `observeTask`
 - `latest wins` means newer values are prioritized; when a running task is cancelled, completion timing depends on cooperative cancellation in user task code
-
-Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
+- keeping the returned `ObservationHandle` is optional; use `cancel()` only when early stop is needed
