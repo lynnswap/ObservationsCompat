@@ -35,6 +35,19 @@ model.observeTask(\.count) { value in
 }
 ```
 
+### Early stop with `ObservationHandle`
+
+```swift
+import ObservationsCompat
+
+let handle = model.observe(\.count) { value in
+    print("count = \(value)")
+}
+
+// Stop observation when needed.
+handle.cancel()
+```
+
 ### Multiple key paths (trigger-only)
 
 ```swift
