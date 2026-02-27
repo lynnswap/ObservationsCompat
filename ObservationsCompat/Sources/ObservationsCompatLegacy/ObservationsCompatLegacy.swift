@@ -4,7 +4,7 @@ import Synchronization
 package func makeLegacyObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
-    isolation: (any Actor)? = nil
+    isolation: (any Actor)? = #isolation
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
         let changeGate = LegacyChangeGate()

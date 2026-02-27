@@ -670,7 +670,7 @@ enum ResolvedBackend: Sendable {
 func makeObservationStream<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isolation: (any Actor)? = nil,
+    isolation: isolated (any Actor)? = #isolation,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     debounce: ObservationDebounce? = nil,
     debounceClock: any Clock<Duration> = ContinuousClock()
