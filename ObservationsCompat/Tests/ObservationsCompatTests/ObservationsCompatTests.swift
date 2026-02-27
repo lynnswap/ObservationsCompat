@@ -161,6 +161,12 @@ private actor ValueQueue<Value: Sendable> {
     }
 }
 
+private actor CallbackIsolationActor {
+    func handle(_ value: sending Int, queue: ValueQueue<Int>) async {
+        await queue.push(value)
+    }
+}
+
 private final class ValueRecorder<Value: Sendable>: Sendable {
     private let storage = Mutex<[Value]>([])
 
@@ -1164,6 +1170,40 @@ struct ObservationsCompatTests {
 
         model.value = 1
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeImplPrefersValueIsolationOverCallbackIsolation() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let callbackIsolation = CallbackIsolationActor()
+        let readMainActorValue: @isolated(any) @Sendable (MainActorCounterModel) -> Int = { @MainActor owner in
+            owner.value
+        }
+        #expect(readMainActorValue.isolation != nil)
+
+        let handle = observeImpl(
+            owner: model,
+            options: [.removeDuplicates],
+            duplicateFilter: { @Sendable lhs, rhs in lhs == rhs },
+            debounce: nil,
+            debounceClock: ContinuousClock(),
+            isolation: callbackIsolation,
+            of: readMainActorValue,
+            onChange: { value in
+                await callbackIsolation.handle(value, queue: queue)
+            }
+        )
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
     }
 
     @Test

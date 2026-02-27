@@ -430,7 +430,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
-    let resolvedIsolation = isolation ?? value.isolation
+    let resolvedIsolation = value.isolation ?? isolation
     // NOTE:
     // `Observations.Iterator.next(isolation:)` does not rebind `emit` closure isolation.
     // If the projected closure lost actor metadata (e.g. key path getter composition),

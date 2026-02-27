@@ -678,7 +678,7 @@ func makeObservationStream<Value: Sendable>(
     let stream = makeRawObservationStream(
         options: options,
         observe,
-        isolation: isolation ?? observe.isolation
+        isolation: observe.isolation ?? isolation
     )
     let streamWithDebounce: AsyncStream<Value>
     if let debounce {
