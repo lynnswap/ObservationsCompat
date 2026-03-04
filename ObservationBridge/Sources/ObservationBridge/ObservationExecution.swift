@@ -623,10 +623,11 @@ private func makeObservedValueStreamNonSendable<Owner: AnyObject, Value>(
     isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
 ) -> AsyncStream<Value> {
+    let resolveOwner = WeakOwnerRegistry.ownerAccessor(token: ownerToken)
     let resolvedIsolation = value.isolation ?? isolation
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<_UncheckedSendableValueBox<Value>> = {
         switch _ObservationBridgeLegacy.legacyEvaluateObservedOwnerValue(
-            owner: WeakOwnerRegistry.owner(token: ownerToken) as? Owner,
+            owner: resolveOwner() as? Owner,
             value: value,
             map: _UncheckedSendableValueBox.init
         ) {
@@ -840,6 +841,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
+    let resolveOwner = WeakOwnerRegistry.ownerAccessor(token: ownerToken)
     let resolvedIsolation = value.isolation ?? isolation
     // NOTE:
     // `Observations.Iterator.next(isolation:)` does not rebind `emit` closure isolation.
@@ -849,7 +851,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     let requiresLegacyIsolationBridge = resolvedIsolation != nil && value.isolation == nil
 
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<Value> = {
-        guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
+        guard let owner = resolveOwner() as? Owner else {
             return .ownerGone
         }
         switch _ObservationBridgeLegacy.legacyEvaluateObservedOwnerValue(owner: owner, value: value) {
@@ -873,18 +875,15 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
         }
         fallthrough
     case .legacy:
-        let stream = makeLegacyObservationStream(
+        await forEachLegacyObservationEmission(
             observeOwnerValue,
             isDuplicate: nil,
             isolation: resolvedIsolation
-        )
-        for await emission in stream {
+        ) { emission in
             guard !Task.isCancelled else {
-                break
+                return false
             }
-            guard await consume(emission) else {
-                break
-            }
+            return await consume(emission)
         }
     }
 }
