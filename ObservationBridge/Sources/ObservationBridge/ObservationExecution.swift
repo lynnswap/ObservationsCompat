@@ -766,11 +766,11 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
     }
 }
 
-func makeDebouncedValueStreamNonSendable<S: AsyncSequence>(
-    _ source: S,
+func makeDebouncedValueStreamNonSendable<Element>(
+    _ source: AsyncStream<Element>,
     debounce: ObservationDebounce,
     debounceClock: any Clock<Duration>
-) -> AsyncStream<S.Element> {
+) -> AsyncStream<Element> {
     makeDebouncedValueStreamNonSendable(
         source,
         debounce: debounce,
@@ -778,11 +778,11 @@ func makeDebouncedValueStreamNonSendable<S: AsyncSequence>(
     )
 }
 
-func makeDebouncedValueStreamNonSendable<S: AsyncSequence, C: Clock<Duration>>(
-    _ source: S,
+func makeDebouncedValueStreamNonSendable<Element, C: Clock<Duration>>(
+    _ source: AsyncStream<Element>,
     debounce: ObservationDebounce,
     clock: C
-) -> AsyncStream<S.Element> {
+) -> AsyncStream<Element> {
     let boxedSource = makeUncheckedSendableBoxedStream(source)
     let debouncedBoxes = makeDebouncedValueStream(
         boxedSource,
@@ -792,25 +792,19 @@ func makeDebouncedValueStreamNonSendable<S: AsyncSequence, C: Clock<Duration>>(
     return makeUncheckedSendableUnboxedStream(debouncedBoxes)
 }
 
-private func makeUncheckedSendableBoxedStream<S: AsyncSequence>(
-    _ source: S
-) -> AsyncStream<_UncheckedSendableValueBox<S.Element>> {
+private func makeUncheckedSendableBoxedStream<Element>(
+    _ source: AsyncStream<Element>
+) -> AsyncStream<_UncheckedSendableValueBox<Element>> {
     let sourceBox = _UncheckedSendableValueBox(source)
     return AsyncStream { continuation in
         let task = Task {
-            do {
-                var iterator = sourceBox.value.makeAsyncIterator()
-                while let nextValue = try await iterator.next() {
-                    guard !Task.isCancelled else {
-                        break
-                    }
-                    continuation.yield(_UncheckedSendableValueBox(nextValue))
+            for await nextValue in sourceBox.value {
+                guard !Task.isCancelled else {
+                    break
                 }
-                continuation.finish()
-            } catch {
-                continuation.finish()
-                preconditionFailure("source unexpectedly threw")
+                continuation.yield(_UncheckedSendableValueBox(nextValue))
             }
+            continuation.finish()
         }
 
         continuation.onTermination = { _ in

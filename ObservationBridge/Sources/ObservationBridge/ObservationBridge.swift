@@ -450,7 +450,7 @@ public extension Observable where Self: AnyObject {
         observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -470,7 +470,7 @@ public extension Observable where Self: AnyObject {
         observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -542,7 +542,7 @@ public extension Observable where Self: AnyObject {
         observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -562,7 +562,7 @@ public extension Observable where Self: AnyObject {
         observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -662,7 +662,7 @@ public extension Observable where Self: AnyObject {
         observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -708,7 +708,7 @@ public extension Observable where Self: AnyObject {
         observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -779,9 +779,7 @@ public extension Observable where Self: AnyObject {
             debounceClock: clock,
             isolation: isolation,
             of: getter,
-            onChange: { _ in
-                await onChange()
-            }
+            onChange: makeNonSendableVoidOnChangeAdapter(onChange)
         )
     }
 
@@ -804,7 +802,7 @@ public extension Observable where Self: AnyObject {
         return observeImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -832,14 +830,12 @@ public extension Observable where Self: AnyObject {
         return observeImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
             of: getter,
-            onChange: { _ in
-                await onChange()
-            }
+            onChange: makeNonSendableVoidOnChangeAdapter(onChange)
         )
     }
 
@@ -903,9 +899,7 @@ public extension Observable where Self: AnyObject {
             debounceClock: clock,
             isolation: isolation,
             of: getter,
-            task: { _ in
-                await task()
-            }
+            task: makeNonSendableVoidTaskAdapter(task)
         )
     }
 
@@ -928,7 +922,7 @@ public extension Observable where Self: AnyObject {
         return observeTaskImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -956,14 +950,12 @@ public extension Observable where Self: AnyObject {
         return observeTaskImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
             of: getter,
-            task: { _ in
-                await task()
-            }
+            task: makeNonSendableVoidTaskAdapter(task)
         )
     }
 
@@ -1020,7 +1012,7 @@ public extension Observable where Self: AnyObject {
         return observeImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -1082,7 +1074,7 @@ public extension Observable where Self: AnyObject {
         return observeTaskImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
             isolation: isolation,
@@ -1099,6 +1091,10 @@ private struct _UncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Se
 
 private struct _UncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked Sendable {
     let keyPaths: [PartialKeyPath<Owner>]
+}
+
+private struct _UncheckedSendableTypeMarker<Value>: @unchecked Sendable {
+    let valueType: Value.Type
 }
 
 private func hasSameObservationIsolation(
@@ -1167,6 +1163,19 @@ private func makeOnChangeAdapter<Value>(
     }
 }
 
+private func makeEquatableDuplicateFilterSendable<Value: Sendable & Equatable>() -> @Sendable (Value, Value) -> Bool {
+    { lhs, rhs in
+        lhs == rhs
+    }
+}
+
+private func makeEquatableDuplicateFilterNonSendable<Value: Equatable>() -> @Sendable (Value, Value) -> Bool {
+    let comparator: (Value, Value) -> Bool = { lhs, rhs in
+        lhs == rhs
+    }
+    return unsafe unsafeBitCast(comparator, to: (@Sendable (Value, Value) -> Bool).self)
+}
+
 private func makeNonSendableOnChangeAdapter<Value>(
     _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
 ) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
@@ -1175,11 +1184,31 @@ private func makeNonSendableOnChangeAdapter<Value>(
     }
 }
 
+private func makeNonSendableVoidOnChangeAdapter<Value>(
+    _ onChange: @escaping @isolated(any) @Sendable () -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
+    let marker = _UncheckedSendableTypeMarker(valueType: Value.self)
+    return { _ in
+        _ = marker
+        await onChange()
+    }
+}
+
 private func makeNonSendableTaskAdapter<Value>(
     _ task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
     { boxedValue in
         await task(boxedValue.value)
+    }
+}
+
+private func makeNonSendableVoidTaskAdapter<Value>(
+    _ task: @escaping @isolated(any) @Sendable () async -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
+    let marker = _UncheckedSendableTypeMarker(valueType: Value.self)
+    return { _ in
+        _ = marker
+        await task()
     }
 }
 
@@ -1230,7 +1259,10 @@ func makeObservationStream<Value>(
 
     let boxedObserve: @isolated(any) @Sendable () -> _UncheckedSendableValueBox<Value> = {
         _UncheckedSendableValueBox(
-            _ObservationBridgeLegacy.legacyEvaluateObservedValue(observe: observe)
+            _ObservationBridgeLegacy.legacyEvaluateObservedValue(
+                isolation: #isolation,
+                observe: observe
+            )
         )
     }
     let boxedDuplicateFilter: (@Sendable (_UncheckedSendableValueBox<Value>, _UncheckedSendableValueBox<Value>) -> Bool)?
@@ -1244,12 +1276,28 @@ func makeObservationStream<Value>(
 
     let boxedStream = makeLegacyObservationStream(
         boxedObserve,
-        isDuplicate: boxedDuplicateFilter,
+        isDuplicate: nil,
         isolation: observe.isolation ?? isolation
     )
+    let boxedStreamWithDebounce: AsyncStream<_UncheckedSendableValueBox<Value>>
+    if let debounce {
+        boxedStreamWithDebounce = makeDebouncedValueStream(
+            boxedStream,
+            debounce: debounce,
+            debounceClock: debounceClock
+        )
+    } else {
+        boxedStreamWithDebounce = boxedStream
+    }
+
+    let boxedFilteredStream = makeDuplicateFilteredStream(
+        boxedStreamWithDebounce,
+        isDuplicate: boxedDuplicateFilter
+    )
+
     let stream = AsyncStream<Value> { continuation in
         let task = Task {
-            for await boxedValue in boxedStream {
+            for await boxedValue in boxedFilteredStream {
                 if Task.isCancelled {
                     break
                 }
@@ -1262,19 +1310,7 @@ func makeObservationStream<Value>(
             task.cancel()
         }
     }
-
-    let streamWithDebounce: AsyncStream<Value>
-    if let debounce {
-        streamWithDebounce = makeDebouncedValueStreamNonSendable(
-            stream,
-            debounce: debounce,
-            debounceClock: debounceClock
-        )
-    } else {
-        streamWithDebounce = stream
-    }
-
-    return streamWithDebounce
+    return stream
 }
 
 private func makeRawObservationStream<Value: Sendable>(
@@ -1476,7 +1512,7 @@ public extension ObservationBridge where Value: Equatable {
         self.init(stream: makeObservationStream(
             options: options,
             observe,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock
         ))
@@ -1501,7 +1537,7 @@ public extension ObservationBridge where Value: Sendable & Equatable {
         self.init(stream: makeObservationStream(
             options: options,
             observe,
-            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock
         ))
