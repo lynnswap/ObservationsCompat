@@ -1981,6 +1981,18 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func hasSameObservationIsolationRejectsNonisolatedPairs() {
+        let lhs = CallbackIsolationActor()
+        let rhs = CallbackIsolationActor()
+
+        #expect(hasSameObservationIsolation(nil, nil) == false)
+        #expect(hasSameObservationIsolation(lhs, nil) == false)
+        #expect(hasSameObservationIsolation(nil, lhs) == false)
+        #expect(hasSameObservationIsolation(lhs, lhs))
+        #expect(hasSameObservationIsolation(lhs, rhs) == false)
+    }
+
+    @Test
     func observeSupportsNonSendableValuesOnMainActorIsolation() async {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []

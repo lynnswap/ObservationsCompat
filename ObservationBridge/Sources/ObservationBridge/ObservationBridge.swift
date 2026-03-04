@@ -1097,18 +1097,14 @@ private struct _UncheckedSendableTypeMarker<Value>: @unchecked Sendable {
     let valueType: Value.Type
 }
 
-private func hasSameObservationIsolation(
+func hasSameObservationIsolation(
     _ lhs: (any Actor)?,
     _ rhs: (any Actor)?
 ) -> Bool {
-    switch (lhs, rhs) {
-    case (nil, nil):
-        return true
-    case let (lhs?, rhs?):
-        return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
-    default:
+    guard let lhs, let rhs else {
         return false
     }
+    return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
 }
 
 private func preconditionNonSendableSameIsolation(
