@@ -7,62 +7,105 @@ package func makeLegacyObservationStream<Value: Sendable>(
     isolation: (any Actor)? = #isolation
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
-        let changeGate = LegacyChangeGate()
+        let observationState = LegacyObservationState()
         let observeIsolation = isolation ?? observe.isolation
         let task = Task {
-            await runLegacyProducer(
-                observe: observe,
-                observeIsolation: observeIsolation,
-                changeGate: changeGate,
-                isDuplicate: isDuplicate,
-                continuation: continuation
-            )
+            await withTaskCancellationHandler(operation: {
+                await runLegacyObservationLoop(
+                    observe: observe,
+                    observeIsolation: observeIsolation,
+                    observationState: observationState,
+                    isDuplicate: isDuplicate,
+                    emit: { value in
+                        continuation.yield(value)
+                        return true
+                    }
+                )
+                continuation.finish()
+            }, onCancel: {
+                observationState.terminate()
+            })
         }
 
         continuation.onTermination = { _ in
-            changeGate.terminate()
+            observationState.terminate()
             task.cancel()
         }
     }
 }
 
-private func runLegacyProducer<Value: Sendable>(
+package func forEachLegacyObservationEmission<Value: Sendable>(
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
+    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
+    isolation: (any Actor)? = #isolation,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    let observationState = LegacyObservationState()
+    let observeIsolation = isolation ?? observe.isolation
+
+    await withTaskCancellationHandler(operation: {
+        await runLegacyObservationLoop(
+            observe: observe,
+            observeIsolation: observeIsolation,
+            observationState: observationState,
+            isDuplicate: isDuplicate,
+            emit: consume
+        )
+    }, onCancel: {
+        observationState.terminate()
+    })
+}
+
+private func runLegacyObservationLoop<Value: Sendable>(
     observe: @escaping @isolated(any) @Sendable () -> Value,
     observeIsolation: (any Actor)?,
-    changeGate: LegacyChangeGate,
+    observationState: LegacyObservationState,
     isDuplicate: (@Sendable (Value, Value) -> Bool)?,
-    continuation: AsyncStream<Value>.Continuation
+    emit: @escaping @Sendable (Value) async -> Bool
 ) async {
     var latestValue: LatestObservedValue<Value> = .unset
 
-    func emitIfNeeded(_ value: Value) {
-        if case .set(let previousValue) = latestValue, let isDuplicate, isDuplicate(previousValue, value) {
-            return
+    func emitIfNeeded(_ value: Value) async -> Bool {
+        if case .set(let previousValue) = latestValue,
+           let isDuplicate,
+           isDuplicate(previousValue, value)
+        {
+            return true
         }
 
         latestValue = .set(value)
-        continuation.yield(value)
+        return await emit(value)
     }
 
-    func registerTracking() async {
+    func registerTracking() async -> Bool {
         let value = await trackLegacyValue(
             isolation: observeIsolation,
             observe: observe,
-            changeGate: changeGate
+            observationState: observationState
         )
-        emitIfNeeded(value)
+        return await emitIfNeeded(value)
     }
 
-    await registerTracking()
-    while await changeGate.waitForChange() {
+    guard !Task.isCancelled else {
+        observationState.terminate()
+        return
+    }
+
+    guard await registerTracking() else {
+        observationState.terminate()
+        return
+    }
+
+    while await observationState.waitForChange() {
         guard !Task.isCancelled else {
             break
         }
-        await registerTracking()
+        guard await registerTracking() else {
+            break
+        }
     }
 
-    changeGate.terminate()
-    continuation.finish()
+    observationState.terminate()
 }
 
 private enum LatestObservedValue<Value> {
@@ -73,24 +116,51 @@ private enum LatestObservedValue<Value> {
 private func trackLegacyValue<Value: Sendable>(
     isolation: (any Actor)?,
     observe: @escaping @isolated(any) @Sendable () -> Value,
-    changeGate: LegacyChangeGate
+    observationState: LegacyObservationState
 ) async -> Value {
-    // Keep this aligned with Swift stdlib Observation (`Observations.swift`):
-    // `Result(catching:)` inside `withObservationTracking` currently emits an
-    // `@isolated(any)` conversion warning, but avoids isolation bypasses such as `unsafeBitCast`.
     await withObservationIsolation(isolation: isolation) {
-        let result = withObservationTracking({
-            Result(catching: observe)
+        withObservationTracking({
+            callIsolatedWithFastPath(observe)
         }, onChange: {
-            changeGate.signalChange()
+            observationState.emitWillChange()
         })
+    }
+}
 
-        switch result {
-        case .success(let value):
-            return value
-        case .failure:
-            preconditionFailure("observe closure unexpectedly threw")
-        }
+@inline(__always)
+private func callIsolatedWithFastPath<Value>(
+    _ closure: @escaping @isolated(any) @Sendable () -> Value
+) -> Value {
+    if closure.isolation == nil {
+        let unisolated = unsafe unsafeBitCast(closure, to: (@Sendable () -> Value).self)
+        return unisolated()
+    }
+
+    let result = Result(catching: closure)
+    switch result {
+    case .success(let value):
+        return value
+    case .failure(let error):
+        preconditionFailure("legacy observation produced unexpected error: \(error)")
+    }
+}
+
+@inline(__always)
+private func callIsolatedWithFastPath<Input, Value>(
+    _ closure: @escaping @isolated(any) (Input) -> Value,
+    _ input: Input
+) -> Value {
+    if closure.isolation == nil {
+        let unisolated = unsafe unsafeBitCast(closure, to: ((Input) -> Value).self)
+        return unisolated(input)
+    }
+
+    let result = Optional(input).map(closure)
+    switch result {
+    case .some(let value):
+        return value
+    case .none:
+        preconditionFailure("legacy observation produced unexpected nil mapping")
     }
 }
 
@@ -101,11 +171,11 @@ private func withObservationIsolation<T>(
     operation()
 }
 
-private final class LegacyChangeGate: Sendable {
+private final class LegacyObservationState: @unchecked Sendable {
     private struct State {
         var dirty = false
         var terminated = false
-        var waiter: CheckedContinuation<Void, Never>? = nil
+        var waiters: [CheckedContinuation<Void, Never>] = []
     }
 
     private enum WaitSetup {
@@ -116,45 +186,55 @@ private final class LegacyChangeGate: Sendable {
 
     private let state = Mutex(State())
 
-    func signalChange() {
-        let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+    func emitWillChange() {
+        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             guard !state.terminated else {
-                return nil
+                return []
             }
 
-            state.dirty = true
-            let waiter = state.waiter
-            state.waiter = nil
-            return waiter
+            if state.waiters.isEmpty {
+                state.dirty = true
+                return []
+            }
+
+            let continuations = state.waiters
+            state.waiters.removeAll(keepingCapacity: true)
+            return continuations
         }
-        waiter?.resume()
+
+        for continuation in continuations {
+            continuation.resume(returning: ())
+        }
     }
 
     func terminate() {
-        let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             guard !state.terminated else {
-                return nil
+                return []
             }
 
             state.terminated = true
             state.dirty = false
-            let waiter = state.waiter
-            state.waiter = nil
-            return waiter
+            let continuations = state.waiters
+            state.waiters.removeAll(keepingCapacity: true)
+            return continuations
         }
-        waiter?.resume()
+
+        for continuation in continuations {
+            continuation.resume(returning: ())
+        }
     }
 
     func waitForChange() async -> Bool {
-        let setup = state.withLock { state in
+        let setup = state.withLock { state -> WaitSetup in
             if state.terminated {
-                return WaitSetup.terminated
+                return .terminated
             }
             if state.dirty {
                 state.dirty = false
-                return WaitSetup.changed
+                return .changed
             }
-            return WaitSetup.wait
+            return .wait
         }
 
         switch setup {
@@ -167,7 +247,7 @@ private final class LegacyChangeGate: Sendable {
         }
 
         await withCheckedContinuation { continuation in
-            let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+            let immediate = state.withLock { state -> CheckedContinuation<Void, Never>? in
                 if state.terminated {
                     return continuation
                 }
@@ -175,43 +255,58 @@ private final class LegacyChangeGate: Sendable {
                     state.dirty = false
                     return continuation
                 }
-
-                precondition(state.waiter == nil, "LegacyChangeGate supports a single waiter")
-                state.waiter = continuation
+                state.waiters.append(continuation)
                 return nil
             }
-            waiter?.resume()
+            immediate?.resume(returning: ())
         }
 
         return state.withLock { state in
-            if state.terminated {
-                return false
-            }
-            if state.dirty {
-                state.dirty = false
-            }
-            return true
+            !state.terminated
         }
     }
 }
 
-package func legacyEvaluateObservedOwnerValue<Owner: AnyObject, Value: Sendable>(
+package func legacyEvaluateObservedOwnerValue<Owner: AnyObject, Value>(
     owner: Owner?,
-    value: @escaping @isolated(any) (Owner) -> Value
+    value: @escaping @isolated(any) (Owner) -> Value,
+    isolation: isolated (any Actor)? = #isolation
 ) -> LegacyOwnerObservationResult<Value> {
     guard let owner else {
         return .ownerGone
     }
 
-    switch Optional(owner).map(value) {
-    case .some(let observedValue):
-        return .value(observedValue)
-    case .none:
-        return .ownerGone
+    return withObservationIsolation(isolation: isolation) {
+        .value(callIsolatedWithFastPath(value, owner))
     }
 }
 
-package enum LegacyOwnerObservationResult<Value: Sendable>: Sendable {
+package func legacyEvaluateObservedOwnerValue<Owner: AnyObject, Value, Mapped>(
+    owner: Owner?,
+    value: @escaping @isolated(any) (Owner) -> Value,
+    isolation: isolated (any Actor)? = #isolation,
+    map: (Value) -> Mapped
+) -> LegacyOwnerObservationResult<Mapped> {
+    switch legacyEvaluateObservedOwnerValue(owner: owner, value: value, isolation: isolation) {
+    case .ownerGone:
+        return .ownerGone
+    case .value(let observedValue):
+        return .value(map(observedValue))
+    }
+}
+
+package func legacyEvaluateObservedValue<Value>(
+    isolation: isolated (any Actor)? = #isolation,
+    observe: @escaping @isolated(any) @Sendable () -> Value
+) -> Value {
+    withObservationIsolation(isolation: isolation) {
+        callIsolatedWithFastPath(observe)
+    }
+}
+
+package enum LegacyOwnerObservationResult<Value> {
     case ownerGone
     case value(Value)
 }
+
+extension LegacyOwnerObservationResult: Sendable where Value: Sendable {}

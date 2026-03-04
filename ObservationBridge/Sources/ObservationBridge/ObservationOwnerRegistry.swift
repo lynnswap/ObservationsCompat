@@ -1,11 +1,44 @@
 import Synchronization
 
-private final class WeakOwnerBox {
+private final class WeakOwnerReference: @unchecked Sendable {
     weak var owner: AnyObject?
 
     init(owner: AnyObject) {
         self.owner = owner
     }
+}
+
+private final class WeakOwnerBox: @unchecked Sendable {
+    private struct State {
+        var isActive: Bool
+        var ownerReference: WeakOwnerReference
+    }
+
+    init(owner: AnyObject) {
+        state = Mutex(
+            State(
+                isActive: true,
+                ownerReference: WeakOwnerReference(owner: owner)
+            )
+        )
+    }
+
+    func ownerIfActive() -> AnyObject? {
+        state.withLock { state in
+            guard state.isActive else {
+                return nil
+            }
+            return state.ownerReference.owner
+        }
+    }
+
+    func deactivate() {
+        state.withLock { state in
+            state.isActive = false
+        }
+    }
+
+    private let state: Mutex<State>
 }
 
 enum WeakOwnerRegistry {
@@ -27,25 +60,44 @@ enum WeakOwnerRegistry {
     }
 
     static func owner(token: UInt64) -> AnyObject? {
-        var resolvedOwner: AnyObject?
-        state.withLock { (state: inout State) in
+        let resolvedOwner = state.withLock { (state: inout State) -> AnyObject? in
             guard let box = state.owners[token] else {
-                return
+                return nil
             }
 
-            guard let owner = box.owner else {
+            guard let owner = box.ownerIfActive() else {
                 state.owners[token] = nil
-                return
+                box.deactivate()
+                return nil
             }
 
-            resolvedOwner = owner
+            return owner
         }
         return resolvedOwner
     }
 
-    static func removeToken(_ token: UInt64) {
-        state.withLock { (state: inout State) in
-            state.owners[token] = nil
+    static func ownerAccessor(token: UInt64) -> @Sendable () -> AnyObject? {
+        let box = state.withLock { (state: inout State) in
+            state.owners[token]
         }
+
+        guard let box else {
+            return { nil }
+        }
+
+        return {
+            guard let owner = box.ownerIfActive() else {
+                removeToken(token)
+                return nil
+            }
+            return owner
+        }
+    }
+
+    static func removeToken(_ token: UInt64) {
+        let box = state.withLock { (state: inout State) in
+            state.owners.removeValue(forKey: token)
+        }
+        box?.deactivate()
     }
 }
