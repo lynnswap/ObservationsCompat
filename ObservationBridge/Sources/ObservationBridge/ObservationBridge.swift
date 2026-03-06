@@ -1213,11 +1213,51 @@ enum ResolvedBackend: Sendable {
     case legacy
 }
 
-private final class ObservationBridgeStreamFactory<Value>: @unchecked Sendable {
-    let makeStream: () -> AsyncStream<Value>
+private final class ObservationBridgeStreamFactory<Value>: Sendable {
+    let makeStream: @Sendable () -> AsyncStream<Value>
 
-    init(makeStream: @escaping () -> AsyncStream<Value>) {
+    init(makeStream: @escaping @Sendable () -> AsyncStream<Value>) {
         self.makeStream = makeStream
+    }
+}
+
+private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable {
+    let options: ObservationOptions
+    let observe: @isolated(any) @Sendable () -> Value
+    let capturedIsolation: (any Actor)?
+    let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
+    let debounce: ObservationDebounce?
+    let debounceClock: any Clock<Duration>
+
+    func makeStream() -> AsyncStream<Value> {
+        makeObservationStreamFromCapturedIsolation(
+            options: options,
+            observe,
+            capturedIsolation: capturedIsolation,
+            duplicateFilter: duplicateFilter,
+            debounce: debounce,
+            debounceClock: debounceClock
+        )
+    }
+}
+
+private struct ObservationBridgeStreamBuilder<Value>: Sendable {
+    let options: ObservationOptions
+    let observe: @isolated(any) @Sendable () -> Value
+    let capturedIsolation: (any Actor)?
+    let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
+    let debounce: ObservationDebounce?
+    let debounceClock: any Clock<Duration>
+
+    func makeStream() -> AsyncStream<Value> {
+        makeObservationStreamFromCapturedIsolation(
+            options: options,
+            observe,
+            capturedIsolation: capturedIsolation,
+            duplicateFilter: duplicateFilter,
+            debounce: debounce,
+            debounceClock: debounceClock
+        )
     }
 }
 
@@ -1555,7 +1595,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
 
     private let streamFactory: ObservationBridgeStreamFactory<Value>
 
-    fileprivate init(streamFactory: @escaping () -> AsyncStream<Value>) {
+    fileprivate init(streamFactory: @escaping @Sendable () -> AsyncStream<Value>) {
         self.streamFactory = ObservationBridgeStreamFactory(makeStream: streamFactory)
     }
 
@@ -1570,18 +1610,15 @@ public struct ObservationBridge<Value>: AsyncSequence {
             preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
         }
 
-        self.init(streamFactory: {
-            // Preserve the actor affinity from bridge construction even when each
-            // iterator builds its own observation stream later.
-            makeObservationStreamFromCapturedIsolation(
-                options: options,
-                observe,
-                capturedIsolation: constructionIsolation,
-                duplicateFilter: nil,
-                debounce: options.debounceForObservation,
-                debounceClock: clock
-            )
-        })
+        let builder = ObservationBridgeStreamBuilder(
+            options: options,
+            observe: observe,
+            capturedIsolation: constructionIsolation,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        )
+        self.init(streamFactory: builder.makeStream)
     }
 
     public func makeAsyncIterator() -> Iterator {
@@ -1603,16 +1640,15 @@ public extension ObservationBridge where Value: Sendable {
             preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
         }
 
-        self.init(streamFactory: {
-            makeObservationStreamFromCapturedIsolation(
-                options: options,
-                observe,
-                capturedIsolation: constructionIsolation,
-                duplicateFilter: nil,
-                debounce: options.debounceForObservation,
-                debounceClock: clock
-            )
-        })
+        let builder = SendableObservationBridgeStreamBuilder(
+            options: options,
+            observe: observe,
+            capturedIsolation: constructionIsolation,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        )
+        self.init(streamFactory: builder.makeStream)
     }
 }
 
@@ -1633,16 +1669,15 @@ public extension ObservationBridge where Value: Equatable {
     ) {
         let constructionIsolation: (any Actor)? = #isolation
 
-        self.init(streamFactory: {
-            makeObservationStreamFromCapturedIsolation(
-                options: options,
-                observe,
-                capturedIsolation: constructionIsolation,
-                duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-                debounce: options.debounceForObservation,
-                debounceClock: clock
-            )
-        })
+        let builder = ObservationBridgeStreamBuilder(
+            options: options,
+            observe: observe,
+            capturedIsolation: constructionIsolation,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        )
+        self.init(streamFactory: builder.makeStream)
     }
 }
 
@@ -1663,16 +1698,15 @@ public extension ObservationBridge where Value: Sendable & Equatable {
     ) {
         let constructionIsolation: (any Actor)? = #isolation
 
-        self.init(streamFactory: {
-            makeObservationStreamFromCapturedIsolation(
-                options: options,
-                observe,
-                capturedIsolation: constructionIsolation,
-                duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-                debounce: options.debounceForObservation,
-                debounceClock: clock
-            )
-        })
+        let builder = SendableObservationBridgeStreamBuilder(
+            options: options,
+            observe: observe,
+            capturedIsolation: constructionIsolation,
+            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        )
+        self.init(streamFactory: builder.makeStream)
     }
 }
 
