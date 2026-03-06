@@ -158,10 +158,10 @@ Backend behavior note:
 - `.legacyBackend` forces legacy behavior on `iOS/macOS 26.0+`
 - legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
 - native uses Swift `Observations` transaction semantics
-- `observeTask` awaits selected observation outputs in order without cancelling prior work
+- `observeTask` never cancels in-flight work; it preserves the next selected output, then coalesces any additional backlog to the latest pending value
 - non-`Sendable` values always use the legacy backend, even on `iOS/macOS 26.0+`
 - non-`Sendable` observation preconditions producer/callback isolation equality; mismatch traps at runtime
-- `observeTask` trades freshness for completeness; if the consumer is slow, later selected values wait their turn instead of replacing in-flight work
+- with `.removeDuplicates`, coalescing still avoids re-emitting a value that duplicates the currently delivered one
 - keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
 - `cancel()` does not remove handles from your `Set`; remove them explicitly if desired
 

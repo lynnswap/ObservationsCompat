@@ -1962,6 +1962,137 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func observeTaskCoalescesBurstValuesWhileCurrentTaskIsRunning() async {
+        let model = CounterModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.value, options: []) { value in
+            await started.push(value)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await completed.push(value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.value = 1
+        await Task.yield()
+        model.value = 2
+        await Task.yield()
+        model.value = 3
+        await Task.yield()
+
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
+
+        await gate.release(1)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 3)
+
+        await gate.release(3)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 3)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskCoalescingPreservesRemoveDuplicatesAcrossInFlightTask() async {
+        let model = CounterModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
+            await started.push(value)
+            await gate.wait(for: value)
+            guard !Task.isCancelled else {
+                return
+            }
+            await completed.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.value = 1
+        await Task.yield()
+        model.value = 0
+        await Task.yield()
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
+
+        await gate.release(1)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 0)
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
+
+        model.value = 2
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 2)
+
+        await gate.release(2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskCoalescingRetainsLatestDistinctBacklogValueForRemoveDuplicates() async {
+        let model = CounterModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
+            await started.push(value)
+            await gate.wait(for: value)
+            guard !Task.isCancelled else {
+                return
+            }
+            await completed.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.value = 1
+        await Task.yield()
+        model.value = 2
+        await Task.yield()
+        model.value = 1
+        await Task.yield()
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
+
+        await gate.release(1)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
     func observeTaskDebounceProcessesSelectedValuesWithoutCancellation() async {
         let model = CounterModel()
         let started = ValueQueue<Int>()
@@ -2096,6 +2227,58 @@ struct ObservationBridgeTests {
         model.payload = NonSendablePayload(value: 2)
         #expect(await waitUntilMainActorCondition { observedValues.count == 3 })
         #expect(observedValues.prefix(3).elementsEqual([0, 1, 2]))
+    }
+
+    @Test
+    func observeTaskCoalescesBurstNonSendableValuesWhileCurrentTaskIsRunning() async {
+        let model = MainActorNonSendablePayloadModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.payload, options: []) { payload in
+            let payloadValue = payload.value
+            await started.push(payloadValue)
+            await withTaskCancellationHandler {
+                await gate.wait(for: payloadValue)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await completed.push(payloadValue)
+            } onCancel: {
+                Task {
+                    await cancelled.push(payloadValue)
+                    await gate.release(payloadValue)
+                }
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.payload = NonSendablePayload(value: 1)
+        await Task.yield()
+        model.payload = NonSendablePayload(value: 2)
+        await Task.yield()
+        model.payload = NonSendablePayload(value: 3)
+        await Task.yield()
+
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
+
+        await gate.release(1)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 3)
+
+        await gate.release(3)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 3)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
