@@ -74,23 +74,31 @@ Available options:
 
 - `.removeDuplicates`: suppresses consecutive equal values.
 - `.debounce(ObservationDebounce)`: coalesces high-frequency updates and emits on debounce boundaries.
+- `.throttle(ObservationThrottle)`: emits immediately, then rate-limits subsequent outputs to one value per interval.
+- `.rateLimit(ObservationRateLimit)`: explicit rate-limit configuration (`.debounce(...)` / `.throttle(...)`).
 - `.legacyBackend` (`iOS 26.0+` / `macOS 26.0+`): forces legacy `withObservationTracking` backend even on modern OS.
 - `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
+- `ObservationThrottle` fields: `interval`, `mode` (`.latest` / `.earliest`).
 
-When both options are used together, duplicate suppression is applied to debounced outputs.
+Rate-limit notes:
+
+- `debounce` and `throttle` are mutually exclusive; combining different rate-limit options is a configuration conflict.
+- `throttle(mode: .latest)` is the default and means: emit the first value immediately, then emit the latest value seen during each interval.
+- `throttle(mode: .earliest)` emits the first value seen during each interval after the initial immediate emission.
+- When `.removeDuplicates` is combined with a rate limit, duplicate suppression is applied to rate-limited outputs.
 
 ### Clock
 
 #### Deterministic testing
 
-In tests, pass your own `Clock` implementation to drive debounce timing manually:
+In tests, pass your own `Clock` implementation to drive debounce or throttle timing manually:
 
 ```swift
 let clock = MyTestClock() // your Clock implementation for tests
-let debounce = ObservationDebounce(interval: .milliseconds(250), mode: .delayedFirst)
+let throttle = ObservationThrottle(interval: .milliseconds(250))
 
 let stream = ObservationBridge(
-    options: [.debounce(debounce)],
+    options: [.throttle(throttle)],
     clock: clock
 ) {
     model.count

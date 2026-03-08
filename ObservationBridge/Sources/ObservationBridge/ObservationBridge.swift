@@ -22,63 +22,95 @@ public struct ObservationDebounce: Sendable, Hashable {
     }
 }
 
+public enum ObservationThrottleMode: Sendable, Hashable {
+    case latest
+    case earliest
+}
+
+public struct ObservationThrottle: Sendable, Hashable {
+    public let interval: Duration
+    public let mode: ObservationThrottleMode
+
+    public init(
+        interval: Duration,
+        mode: ObservationThrottleMode = .latest
+    ) {
+        self.interval = interval
+        self.mode = mode
+    }
+}
+
+public enum ObservationRateLimit: Sendable, Hashable {
+    case debounce(ObservationDebounce)
+    case throttle(ObservationThrottle)
+}
+
 public struct ObservationOptions: OptionSet, Sendable {
     private static let removeDuplicatesFlag: UInt64 = 1 << 0
-    private static let debounceFlag: UInt64 = 1 << 1
-    private static let delayedFirstFlag: UInt64 = 1 << 2
-    private static let tolerancePresentFlag: UInt64 = 1 << 3
+    private static let rateLimitFlag: UInt64 = 1 << 1
+    private static let rateLimitModeFlag: UInt64 = 1 << 2
+    private static let rateLimitTolerancePresentFlag: UInt64 = 1 << 3
+    private static let conflictingRateLimitFlag: UInt64 = 1 << 60
     private static let legacyBackendFlag: UInt64 = 1 << 61
-    private static let conflictingDebounceFlag: UInt64 = 1 << 60
-    private static let debouncePayloadBitWidth: UInt64 = 28
-    private static let debounceIntervalShift: UInt64 = 4
-    private static let debounceToleranceShift: UInt64 = debounceIntervalShift + debouncePayloadBitWidth
-    private static let debouncePayloadMask: UInt64 = (1 << debouncePayloadBitWidth) - 1
-    private static let debounceIntervalMask: UInt64 = debouncePayloadMask << debounceIntervalShift
-    private static let debounceToleranceMask: UInt64 = debouncePayloadMask << debounceToleranceShift
-    private static let membershipMask: UInt64 = removeDuplicatesFlag | debounceFlag | legacyBackendFlag
+    private static let rateLimitEncodingVersionFlag: UInt64 = 1 << 62
+    private static let rateLimitKindThrottleFlag: UInt64 = 1 << 63
+    private static let rateLimitPayloadBitWidth: UInt64 = 28
+    private static let rateLimitIntervalShift: UInt64 = 4
+    private static let rateLimitToleranceShift: UInt64 = rateLimitIntervalShift + rateLimitPayloadBitWidth
+    private static let rateLimitPayloadMask: UInt64 = (1 << rateLimitPayloadBitWidth) - 1
+    private static let rateLimitIntervalMask: UInt64 = rateLimitPayloadMask << rateLimitIntervalShift
+    private static let rateLimitToleranceMask: UInt64 = rateLimitPayloadMask << rateLimitToleranceShift
+    private static let legacyDebounceFlag = rateLimitFlag
+    private static let legacyDelayedFirstFlag: UInt64 = 1 << 2
+    private static let legacyTolerancePresentFlag: UInt64 = 1 << 3
+    private static let legacyDebounceIntervalShift: UInt64 = 4
+    private static let legacyDebounceToleranceShift: UInt64 = legacyDebounceIntervalShift + rateLimitPayloadBitWidth
+    private static let legacyDebounceIntervalMask: UInt64 = rateLimitPayloadMask << legacyDebounceIntervalShift
+    private static let legacyDebounceToleranceMask: UInt64 = rateLimitPayloadMask << legacyDebounceToleranceShift
+    private static let membershipMask: UInt64 = removeDuplicatesFlag | rateLimitFlag | legacyBackendFlag
 
     public let rawValue: UInt64
-    private let debounceConfiguration: ObservationDebounce?
-    private let hasConflictingDebounce: Bool
+    private let rateLimitConfiguration: ObservationRateLimit?
+    private let hasConflictingRateLimit: Bool
 
     public init() {
         rawValue = 0
-        debounceConfiguration = nil
-        hasConflictingDebounce = false
+        rateLimitConfiguration = nil
+        hasConflictingRateLimit = false
     }
 
     public init(rawValue: UInt64) {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0
-        let hasConflictingDebounce = (rawValue & Self.conflictingDebounceFlag) != 0
-        let debounceConfiguration = hasConflictingDebounce ? nil : Self.decodeDebounceConfiguration(from: rawValue)
+        let hasConflictingRateLimit = (rawValue & Self.conflictingRateLimitFlag) != 0
+        let rateLimitConfiguration = hasConflictingRateLimit ? nil : Self.decodeRateLimitConfiguration(from: rawValue)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: debounceConfiguration,
-            hasConflictingDebounce: hasConflictingDebounce
+            rateLimitConfiguration: rateLimitConfiguration,
+            hasConflictingRateLimit: hasConflictingRateLimit
         )
-        self.debounceConfiguration = debounceConfiguration
-        self.hasConflictingDebounce = hasConflictingDebounce
+        self.rateLimitConfiguration = rateLimitConfiguration
+        self.hasConflictingRateLimit = hasConflictingRateLimit
     }
 
     private init(
         removeDuplicates: Bool,
         usesLegacyBackend: Bool,
-        debounceConfiguration: ObservationDebounce?,
-        hasConflictingDebounce: Bool = false
+        rateLimitConfiguration: ObservationRateLimit?,
+        hasConflictingRateLimit: Bool = false
     ) {
-        let normalizedDebounceConfiguration = hasConflictingDebounce
+        let normalizedRateLimitConfiguration = hasConflictingRateLimit
             ? nil
-            : Self.normalizeDebounceConfiguration(debounceConfiguration)
+            : Self.normalizeRateLimitConfiguration(rateLimitConfiguration)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: normalizedDebounceConfiguration,
-            hasConflictingDebounce: hasConflictingDebounce
+            rateLimitConfiguration: normalizedRateLimitConfiguration,
+            hasConflictingRateLimit: hasConflictingRateLimit
         )
-        self.debounceConfiguration = normalizedDebounceConfiguration
-        self.hasConflictingDebounce = hasConflictingDebounce
+        self.rateLimitConfiguration = normalizedRateLimitConfiguration
+        self.hasConflictingRateLimit = hasConflictingRateLimit
     }
 
     public init(arrayLiteral elements: ObservationOptions...) {
@@ -94,23 +126,45 @@ public struct ObservationOptions: OptionSet, Sendable {
     @available(iOS 26.0, macOS 26.0, *)
     public static let legacyBackend = ObservationOptions(rawValue: legacyBackendFlag)
 
+    public static func rateLimit(_ configuration: ObservationRateLimit) -> ObservationOptions {
+        ObservationOptions(removeDuplicates: false, usesLegacyBackend: false, rateLimitConfiguration: configuration)
+    }
+
     public static func debounce(_ configuration: ObservationDebounce) -> ObservationOptions {
-        ObservationOptions(removeDuplicates: false, usesLegacyBackend: false, debounceConfiguration: configuration)
+        rateLimit(.debounce(configuration))
+    }
+
+    public static func throttle(_ configuration: ObservationThrottle) -> ObservationOptions {
+        rateLimit(.throttle(configuration))
+    }
+
+    public var rateLimit: ObservationRateLimit? {
+        rateLimitConfiguration
     }
 
     public var debounce: ObservationDebounce? {
-        debounceConfiguration
-    }
-
-    var hasDebounceConflict: Bool {
-        hasConflictingDebounce
-    }
-
-    var debounceForObservation: ObservationDebounce? {
-        guard !hasDebounceConflict else {
-            preconditionFailure("Conflicting debounce options are not supported when starting observation")
+        guard case let .debounce(configuration)? = rateLimitConfiguration else {
+            return nil
         }
-        return debounceConfiguration
+        return configuration
+    }
+
+    public var throttle: ObservationThrottle? {
+        guard case let .throttle(configuration)? = rateLimitConfiguration else {
+            return nil
+        }
+        return configuration
+    }
+
+    var hasRateLimitConflict: Bool {
+        hasConflictingRateLimit
+    }
+
+    var rateLimitForObservation: ObservationRateLimit? {
+        guard !hasRateLimitConflict else {
+            preconditionFailure("Conflicting rate limit options are not supported when starting observation")
+        }
+        return rateLimitConfiguration
     }
 
     var forcesLegacyBackend: Bool {
@@ -123,29 +177,29 @@ public struct ObservationOptions: OptionSet, Sendable {
         guard (ownMembership & memberMembership) == memberMembership else {
             return false
         }
-        if member.hasConflictingDebounce {
-            return hasConflictingDebounce
+        if member.hasConflictingRateLimit {
+            return hasConflictingRateLimit
         }
-        guard let memberDebounceConfiguration = member.debounceConfiguration else {
+        guard let memberRateLimitConfiguration = member.rateLimitConfiguration else {
             return true
         }
-        return debounceConfiguration == memberDebounceConfiguration
+        return rateLimitConfiguration == memberRateLimitConfiguration
     }
 
     public func union(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 || (other.rawValue & Self.removeDuplicatesFlag) != 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 || (other.rawValue & Self.legacyBackendFlag) != 0
-        let mergedDebounce = Self.mergeDebounce(
-            lhs: debounceConfiguration,
-            lhsConflicting: hasConflictingDebounce,
-            rhs: other.debounceConfiguration,
-            rhsConflicting: other.hasConflictingDebounce
+        let mergedRateLimit = Self.mergeRateLimit(
+            lhs: rateLimitConfiguration,
+            lhsConflicting: hasConflictingRateLimit,
+            rhs: other.rateLimitConfiguration,
+            rhsConflicting: other.hasConflictingRateLimit
         )
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: mergedDebounce.configuration,
-            hasConflictingDebounce: mergedDebounce.hasConflict
+            rateLimitConfiguration: mergedRateLimit.configuration,
+            hasConflictingRateLimit: mergedRateLimit.hasConflict
         )
     }
 
@@ -156,13 +210,13 @@ public struct ObservationOptions: OptionSet, Sendable {
     public func intersection(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) != 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) != 0
-        let intersectedConflict = hasConflictingDebounce && other.hasConflictingDebounce
-        let intersectedDebounce = intersectedConflict ? nil : (debounceConfiguration == other.debounceConfiguration ? debounceConfiguration : nil)
+        let intersectedConflict = hasConflictingRateLimit && other.hasConflictingRateLimit
+        let intersectedRateLimit = intersectedConflict ? nil : (rateLimitConfiguration == other.rateLimitConfiguration ? rateLimitConfiguration : nil)
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: intersectedDebounce,
-            hasConflictingDebounce: intersectedConflict
+            rateLimitConfiguration: intersectedRateLimit,
+            hasConflictingRateLimit: intersectedConflict
         )
     }
 
@@ -173,28 +227,28 @@ public struct ObservationOptions: OptionSet, Sendable {
     public func symmetricDifference(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = ((rawValue & Self.removeDuplicatesFlag) != 0) != ((other.rawValue & Self.removeDuplicatesFlag) != 0)
         let usesLegacyBackend = ((rawValue & Self.legacyBackendFlag) != 0) != ((other.rawValue & Self.legacyBackendFlag) != 0)
-        let resultingConflict = hasConflictingDebounce != other.hasConflictingDebounce
-        let resultingDebounce: ObservationDebounce?
+        let resultingConflict = hasConflictingRateLimit != other.hasConflictingRateLimit
+        let resultingRateLimit: ObservationRateLimit?
         if resultingConflict {
-            resultingDebounce = nil
+            resultingRateLimit = nil
         } else {
-            switch (debounceConfiguration, other.debounceConfiguration) {
+            switch (rateLimitConfiguration, other.rateLimitConfiguration) {
             case (nil, nil):
-                resultingDebounce = nil
+                resultingRateLimit = nil
             case let (lhs?, nil):
-                resultingDebounce = lhs
+                resultingRateLimit = lhs
             case let (nil, rhs?):
-                resultingDebounce = rhs
+                resultingRateLimit = rhs
             case (.some, .some):
-                resultingDebounce = nil
+                resultingRateLimit = nil
             }
         }
 
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: resultingDebounce,
-            hasConflictingDebounce: resultingConflict
+            rateLimitConfiguration: resultingRateLimit,
+            hasConflictingRateLimit: resultingConflict
         )
     }
 
@@ -206,19 +260,19 @@ public struct ObservationOptions: OptionSet, Sendable {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) == 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) == 0
         let resultingConflict: Bool
-        let resultingDebounce: ObservationDebounce?
-        if hasConflictingDebounce {
-            resultingConflict = !other.hasConflictingDebounce
-            resultingDebounce = nil
+        let resultingRateLimit: ObservationRateLimit?
+        if hasConflictingRateLimit {
+            resultingConflict = !other.hasConflictingRateLimit
+            resultingRateLimit = nil
         } else {
             resultingConflict = false
-            resultingDebounce = debounceConfiguration == other.debounceConfiguration ? nil : debounceConfiguration
+            resultingRateLimit = rateLimitConfiguration == other.rateLimitConfiguration ? nil : rateLimitConfiguration
         }
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
-            debounceConfiguration: resultingDebounce,
-            hasConflictingDebounce: resultingConflict
+            rateLimitConfiguration: resultingRateLimit,
+            hasConflictingRateLimit: resultingConflict
         )
     }
 
@@ -252,38 +306,79 @@ public struct ObservationOptions: OptionSet, Sendable {
     private static func encodeRawValue(
         removeDuplicates: Bool,
         usesLegacyBackend: Bool,
-        debounceConfiguration: ObservationDebounce?,
-        hasConflictingDebounce: Bool
+        rateLimitConfiguration: ObservationRateLimit?,
+        hasConflictingRateLimit: Bool
     ) -> UInt64 {
         var rawValue: UInt64 = removeDuplicates ? removeDuplicatesFlag : 0
         if usesLegacyBackend {
             rawValue |= legacyBackendFlag
         }
-        if hasConflictingDebounce {
-            rawValue |= conflictingDebounceFlag
+        if hasConflictingRateLimit {
+            rawValue |= conflictingRateLimitFlag
             return rawValue
         }
-        guard let debounceConfiguration else {
+        guard let rateLimitConfiguration else {
             return rawValue
         }
 
-        rawValue |= debounceFlag
-        rawValue |= encodeDebouncePayload(debounceConfiguration)
+        rawValue |= rateLimitFlag
+        rawValue |= rateLimitEncodingVersionFlag
+        rawValue |= encodeRateLimitPayload(rateLimitConfiguration)
         return rawValue
     }
 
-    private static func decodeDebounceConfiguration(from rawValue: UInt64) -> ObservationDebounce? {
-        guard (rawValue & debounceFlag) != 0 else {
+    private static func decodeRateLimitConfiguration(from rawValue: UInt64) -> ObservationRateLimit? {
+        guard (rawValue & rateLimitFlag) != 0 else {
             return nil
         }
 
-        let mode: ObservationDebounceMode = (rawValue & delayedFirstFlag) != 0 ? .delayedFirst : .immediateFirst
-        let intervalMilliseconds = (rawValue & debounceIntervalMask) >> debounceIntervalShift
+        if (rawValue & rateLimitEncodingVersionFlag) == 0 {
+            return decodeLegacyDebounceConfiguration(from: rawValue).map(ObservationRateLimit.debounce)
+        }
+
+        let intervalMilliseconds = (rawValue & rateLimitIntervalMask) >> rateLimitIntervalShift
+        let interval = Duration.milliseconds(Int64(intervalMilliseconds))
+
+        if (rawValue & rateLimitKindThrottleFlag) != 0 {
+            let mode: ObservationThrottleMode = (rawValue & rateLimitModeFlag) != 0 ? .earliest : .latest
+            return .throttle(
+                ObservationThrottle(
+                    interval: interval,
+                    mode: mode
+                )
+            )
+        }
+
+        let mode: ObservationDebounceMode = (rawValue & rateLimitModeFlag) != 0 ? .delayedFirst : .immediateFirst
+        let tolerance: Duration?
+        if (rawValue & rateLimitTolerancePresentFlag) != 0 {
+            let toleranceMilliseconds = (rawValue & rateLimitToleranceMask) >> rateLimitToleranceShift
+            tolerance = .milliseconds(Int64(toleranceMilliseconds))
+        } else {
+            tolerance = nil
+        }
+
+        return .debounce(
+            ObservationDebounce(
+                interval: interval,
+                tolerance: tolerance,
+                mode: mode
+            )
+        )
+    }
+
+    private static func decodeLegacyDebounceConfiguration(from rawValue: UInt64) -> ObservationDebounce? {
+        guard (rawValue & legacyDebounceFlag) != 0 else {
+            return nil
+        }
+
+        let mode: ObservationDebounceMode = (rawValue & legacyDelayedFirstFlag) != 0 ? .delayedFirst : .immediateFirst
+        let intervalMilliseconds = (rawValue & legacyDebounceIntervalMask) >> legacyDebounceIntervalShift
         let interval = Duration.milliseconds(Int64(intervalMilliseconds))
 
         let tolerance: Duration?
-        if (rawValue & tolerancePresentFlag) != 0 {
-            let toleranceMilliseconds = (rawValue & debounceToleranceMask) >> debounceToleranceShift
+        if (rawValue & legacyTolerancePresentFlag) != 0 {
+            let toleranceMilliseconds = (rawValue & legacyDebounceToleranceMask) >> legacyDebounceToleranceShift
             tolerance = .milliseconds(Int64(toleranceMilliseconds))
         } else {
             tolerance = nil
@@ -296,35 +391,50 @@ public struct ObservationOptions: OptionSet, Sendable {
         )
     }
 
-    private static func normalizeDebounceConfiguration(_ debounceConfiguration: ObservationDebounce?) -> ObservationDebounce? {
-        guard let debounceConfiguration else {
+    private static func normalizeRateLimitConfiguration(_ rateLimitConfiguration: ObservationRateLimit?) -> ObservationRateLimit? {
+        guard let rateLimitConfiguration else {
             return nil
         }
-        let encodedRawValue = debounceFlag | encodeDebouncePayload(debounceConfiguration)
-        return decodeDebounceConfiguration(from: encodedRawValue)
+        let encodedRawValue = rateLimitFlag | rateLimitEncodingVersionFlag | encodeRateLimitPayload(rateLimitConfiguration)
+        return decodeRateLimitConfiguration(from: encodedRawValue)
     }
 
-    private static func encodeDebouncePayload(_ debounceConfiguration: ObservationDebounce) -> UInt64 {
-        let intervalMilliseconds = encodeMilliseconds(
-            debounceConfiguration.interval,
-            parameter: "interval"
-        )
-
-        var payload = intervalMilliseconds << debounceIntervalShift
-        if debounceConfiguration.mode == .delayedFirst {
-            payload |= delayedFirstFlag
-        }
-
-        if let tolerance = debounceConfiguration.tolerance {
-            let toleranceMilliseconds = encodeMilliseconds(
-                tolerance,
-                parameter: "tolerance"
+    private static func encodeRateLimitPayload(_ rateLimitConfiguration: ObservationRateLimit) -> UInt64 {
+        switch rateLimitConfiguration {
+        case let .debounce(debounceConfiguration):
+            let intervalMilliseconds = encodeMilliseconds(
+                debounceConfiguration.interval,
+                parameter: "interval"
             )
-            payload |= tolerancePresentFlag
-            payload |= toleranceMilliseconds << debounceToleranceShift
-        }
 
-        return payload
+            var payload = intervalMilliseconds << rateLimitIntervalShift
+            if debounceConfiguration.mode == .delayedFirst {
+                payload |= rateLimitModeFlag
+            }
+
+            if let tolerance = debounceConfiguration.tolerance {
+                let toleranceMilliseconds = encodeMilliseconds(
+                    tolerance,
+                    parameter: "tolerance"
+                )
+                payload |= rateLimitTolerancePresentFlag
+                payload |= toleranceMilliseconds << rateLimitToleranceShift
+            }
+
+            return payload
+        case let .throttle(throttleConfiguration):
+            let intervalMilliseconds = encodeMilliseconds(
+                throttleConfiguration.interval,
+                parameter: "interval"
+            )
+
+            var payload = rateLimitKindThrottleFlag
+            payload |= intervalMilliseconds << rateLimitIntervalShift
+            if throttleConfiguration.mode == .earliest {
+                payload |= rateLimitModeFlag
+            }
+            return payload
+        }
     }
 
     private static func encodeMilliseconds(
@@ -351,39 +461,39 @@ public struct ObservationOptions: OptionSet, Sendable {
         precondition(!totalOverflow, "\(parameter) is too large to encode")
 
         precondition(
-            totalMilliseconds <= debouncePayloadMask,
+            totalMilliseconds <= rateLimitPayloadMask,
             "\(parameter) is too large to encode"
         )
         return totalMilliseconds
     }
 
-    private struct DebounceMergeResult {
-        let configuration: ObservationDebounce?
+    private struct RateLimitMergeResult {
+        let configuration: ObservationRateLimit?
         let hasConflict: Bool
     }
 
-    private static func mergeDebounce(
-        lhs: ObservationDebounce?,
+    private static func mergeRateLimit(
+        lhs: ObservationRateLimit?,
         lhsConflicting: Bool,
-        rhs: ObservationDebounce?,
+        rhs: ObservationRateLimit?,
         rhsConflicting: Bool
-    ) -> DebounceMergeResult {
+    ) -> RateLimitMergeResult {
         if lhsConflicting || rhsConflicting {
-            return DebounceMergeResult(configuration: nil, hasConflict: true)
+            return RateLimitMergeResult(configuration: nil, hasConflict: true)
         }
 
         switch (lhs, rhs) {
         case (nil, nil):
-            return DebounceMergeResult(configuration: nil, hasConflict: false)
+            return RateLimitMergeResult(configuration: nil, hasConflict: false)
         case let (lhs?, nil):
-            return DebounceMergeResult(configuration: lhs, hasConflict: false)
+            return RateLimitMergeResult(configuration: lhs, hasConflict: false)
         case let (nil, rhs?):
-            return DebounceMergeResult(configuration: rhs, hasConflict: false)
+            return RateLimitMergeResult(configuration: rhs, hasConflict: false)
         case let (lhs?, rhs?):
             if lhs == rhs {
-                return DebounceMergeResult(configuration: lhs, hasConflict: false)
+                return RateLimitMergeResult(configuration: lhs, hasConflict: false)
             }
-            return DebounceMergeResult(configuration: nil, hasConflict: true)
+            return RateLimitMergeResult(configuration: nil, hasConflict: true)
         }
     }
 }
@@ -405,8 +515,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
@@ -429,8 +539,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: { _ in
@@ -451,8 +561,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
@@ -471,8 +581,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: { _ in
@@ -497,8 +607,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
@@ -521,8 +631,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             task: { _ in
@@ -543,8 +653,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
@@ -563,8 +673,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             task: { _ in
@@ -589,8 +699,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
@@ -615,8 +725,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             task: { _ in
@@ -642,8 +752,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
@@ -663,8 +773,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
@@ -688,8 +798,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
@@ -709,8 +819,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
@@ -743,8 +853,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             onChange: makeNonSendableOnChangeAdapter(onChange)
@@ -775,8 +885,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             onChange: makeNonSendableVoidOnChangeAdapter(onChange)
@@ -803,8 +913,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             onChange: makeNonSendableOnChangeAdapter(onChange)
@@ -831,8 +941,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             onChange: makeNonSendableVoidOnChangeAdapter(onChange)
@@ -863,8 +973,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             task: makeNonSendableTaskAdapter(task)
@@ -895,8 +1005,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             task: makeNonSendableVoidTaskAdapter(task)
@@ -923,8 +1033,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             task: makeNonSendableTaskAdapter(task)
@@ -951,8 +1061,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             task: makeNonSendableVoidTaskAdapter(task)
@@ -984,8 +1094,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: projection,
             onChange: makeNonSendableOnChangeAdapter(onChange)
@@ -1013,8 +1123,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: projection,
             onChange: makeNonSendableOnChangeAdapter(onChange)
@@ -1046,8 +1156,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: projection,
             task: makeNonSendableTaskAdapter(task)
@@ -1075,8 +1185,8 @@ public extension Observable where Self: AnyObject {
             owner: self,
             options: options,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock,
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock,
             isolation: isolation,
             of: projection,
             task: makeNonSendableTaskAdapter(task)
@@ -1226,8 +1336,8 @@ private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
     let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
-    let debounce: ObservationDebounce?
-    let debounceClock: any Clock<Duration>
+    let rateLimit: ObservationRateLimit?
+    let rateLimitClock: any Clock<Duration>
 
     func makeStream() -> AsyncStream<Value> {
         makeObservationStreamFromCapturedIsolation(
@@ -1235,8 +1345,8 @@ private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable
             observe,
             capturedIsolation: capturedIsolation,
             duplicateFilter: duplicateFilter,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     }
 }
@@ -1246,8 +1356,8 @@ private struct ObservationBridgeStreamBuilder<Value>: Sendable {
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
     let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
-    let debounce: ObservationDebounce?
-    let debounceClock: any Clock<Duration>
+    let rateLimit: ObservationRateLimit?
+    let rateLimitClock: any Clock<Duration>
 
     func makeStream() -> AsyncStream<Value> {
         makeObservationStreamFromCapturedIsolation(
@@ -1255,8 +1365,8 @@ private struct ObservationBridgeStreamBuilder<Value>: Sendable {
             observe,
             capturedIsolation: capturedIsolation,
             duplicateFilter: duplicateFilter,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     }
 }
@@ -1266,27 +1376,27 @@ func makeObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
-    debounce: ObservationDebounce? = nil,
-    debounceClock: any Clock<Duration> = ContinuousClock()
+    rateLimit: ObservationRateLimit? = nil,
+    rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
     let stream = makeRawObservationStream(
         options: options,
         observe,
         isolation: observe.isolation ?? isolation
     )
-    let streamWithDebounce: AsyncStream<Value>
-    if let debounce {
-        streamWithDebounce = makeDebouncedValueStream(
+    let streamWithRateLimit: AsyncStream<Value>
+    if let rateLimit {
+        streamWithRateLimit = makeRateLimitedValueStream(
             stream,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     } else {
-        streamWithDebounce = stream
+        streamWithRateLimit = stream
     }
 
     return makeDuplicateFilteredStream(
-        streamWithDebounce,
+        streamWithRateLimit,
         isDuplicate: duplicateFilter
     )
 }
@@ -1296,27 +1406,27 @@ private func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
-    debounce: ObservationDebounce? = nil,
-    debounceClock: any Clock<Duration> = ContinuousClock()
+    rateLimit: ObservationRateLimit? = nil,
+    rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
     let stream = makeRawObservationStream(
         options: options,
         observe,
         isolation: observe.isolation ?? capturedIsolation
     )
-    let streamWithDebounce: AsyncStream<Value>
-    if let debounce {
-        streamWithDebounce = makeDebouncedValueStream(
+    let streamWithRateLimit: AsyncStream<Value>
+    if let rateLimit {
+        streamWithRateLimit = makeRateLimitedValueStream(
             stream,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     } else {
-        streamWithDebounce = stream
+        streamWithRateLimit = stream
     }
 
     return makeDuplicateFilteredStream(
-        streamWithDebounce,
+        streamWithRateLimit,
         isDuplicate: duplicateFilter
     )
 }
@@ -1326,8 +1436,8 @@ func makeObservationStream<Value>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
-    debounce: ObservationDebounce? = nil,
-    debounceClock: any Clock<Duration> = ContinuousClock()
+    rateLimit: ObservationRateLimit? = nil,
+    rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
     _ = options
 
@@ -1353,19 +1463,19 @@ func makeObservationStream<Value>(
         isDuplicate: nil,
         isolation: observe.isolation ?? isolation
     )
-    let boxedStreamWithDebounce: AsyncStream<_UncheckedSendableValueBox<Value>>
-    if let debounce {
-        boxedStreamWithDebounce = makeDebouncedValueStream(
+    let boxedStreamWithRateLimit: AsyncStream<_UncheckedSendableValueBox<Value>>
+    if let rateLimit {
+        boxedStreamWithRateLimit = makeRateLimitedValueStream(
             boxedStream,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     } else {
-        boxedStreamWithDebounce = boxedStream
+        boxedStreamWithRateLimit = boxedStream
     }
 
     let boxedFilteredStream = makeDuplicateFilteredStream(
-        boxedStreamWithDebounce,
+        boxedStreamWithRateLimit,
         isDuplicate: boxedDuplicateFilter
     )
 
@@ -1392,8 +1502,8 @@ private func makeObservationStreamFromCapturedIsolation<Value>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
-    debounce: ObservationDebounce? = nil,
-    debounceClock: any Clock<Duration> = ContinuousClock()
+    rateLimit: ObservationRateLimit? = nil,
+    rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
     _ = options
 
@@ -1429,19 +1539,19 @@ private func makeObservationStreamFromCapturedIsolation<Value>(
         isDuplicate: nil,
         isolation: observe.isolation ?? capturedIsolation
     )
-    let boxedStreamWithDebounce: AsyncStream<_UncheckedSendableValueBox<Value>>
-    if let debounce {
-        boxedStreamWithDebounce = makeDebouncedValueStream(
+    let boxedStreamWithRateLimit: AsyncStream<_UncheckedSendableValueBox<Value>>
+    if let rateLimit {
+        boxedStreamWithRateLimit = makeRateLimitedValueStream(
             boxedStream,
-            debounce: debounce,
-            debounceClock: debounceClock
+            rateLimit: rateLimit,
+            rateLimitClock: rateLimitClock
         )
     } else {
-        boxedStreamWithDebounce = boxedStream
+        boxedStreamWithRateLimit = boxedStream
     }
 
     let boxedFilteredStream = makeDuplicateFilteredStream(
-        boxedStreamWithDebounce,
+        boxedStreamWithRateLimit,
         isDuplicate: boxedDuplicateFilter
     )
 
@@ -1615,8 +1725,8 @@ public struct ObservationBridge<Value>: AsyncSequence {
             observe: observe,
             capturedIsolation: constructionIsolation,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
     }
@@ -1645,8 +1755,8 @@ public extension ObservationBridge where Value: Sendable {
             observe: observe,
             capturedIsolation: constructionIsolation,
             duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
     }
@@ -1674,8 +1784,8 @@ public extension ObservationBridge where Value: Equatable {
             observe: observe,
             capturedIsolation: constructionIsolation,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
     }
@@ -1703,8 +1813,8 @@ public extension ObservationBridge where Value: Sendable & Equatable {
             observe: observe,
             capturedIsolation: constructionIsolation,
             duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
+            rateLimit: options.rateLimitForObservation,
+            rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
     }

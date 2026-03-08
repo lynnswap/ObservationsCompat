@@ -953,6 +953,80 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func observationBridgeThrottleLatestSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let throttle = ObservationThrottle(interval: .milliseconds(200))
+        let stream = ObservationBridge(
+            options: legacyOptionsForCurrentRuntime([.throttle(throttle)]),
+            clock: clock
+        ) {
+            model.value
+        }
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        model.value = 3
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 3)
+    }
+
+    @Test
+    func observationBridgeThrottleEarliestSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let throttle = ObservationThrottle(
+            interval: .milliseconds(200),
+            mode: .earliest
+        )
+        let stream = ObservationBridge(
+            options: legacyOptionsForCurrentRuntime([.throttle(throttle)]),
+            clock: clock
+        ) {
+            model.value
+        }
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 10
+        await Task.yield()
+        model.value = 11
+        await Task.yield()
+        model.value = 12
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 10)
+    }
+
+    @Test
     func makeObservationBridgeStreamSupportsOptionsAndClock() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
@@ -1284,6 +1358,72 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func observeTaskThrottleLatestSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let throttle = ObservationThrottle(interval: .milliseconds(200))
+
+        let handle = model.observeTask(
+            \.value,
+            options: [.throttle(throttle)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        model.value = 3
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 3)
+    }
+
+    @Test
+    func observeTaskThrottleEarliestSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let throttle = ObservationThrottle(
+            interval: .milliseconds(200),
+            mode: .earliest
+        )
+
+        let handle = model.observeTask(
+            \.value,
+            options: [.throttle(throttle)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 10
+        await Task.yield()
+        model.value = 11
+        await Task.yield()
+        model.value = 12
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 10)
+    }
+
+    @Test
     func observeMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1416,8 +1556,8 @@ struct ObservationBridgeTests {
             owner: model,
             options: [.removeDuplicates],
             duplicateFilter: { @Sendable lhs, rhs in lhs == rhs },
-            debounce: nil,
-            debounceClock: ContinuousClock(),
+            rateLimit: nil,
+            rateLimitClock: ContinuousClock(),
             isolation: callbackIsolation,
             of: readMainActorValue,
             onChange: { value in
@@ -1459,7 +1599,129 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observationOptionsSetAlgebraPreservesDebounceMetadata() {
+    func observeTaskThrottleAndRemoveDuplicatesSuppressesPostThrottleDuplicateOutputs() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let throttle = ObservationThrottle(interval: .milliseconds(200))
+
+        let handle = model.observeTask(
+            \.parity,
+            options: [.removeDuplicates, .throttle(throttle)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+    }
+
+    @Test
+    func makeThrottledValueStreamFlushesPendingLatestValueWhenSourceFinishes() async {
+        let clock = TestDebounceClock()
+        let queue = ValueQueue<Int>()
+        let throttle = ObservationThrottle(interval: .milliseconds(200))
+        let (source, continuation) = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let throttled = makeThrottledValueStream(
+            source,
+            throttle: throttle,
+            throttleClock: clock
+        )
+
+        let consumer = Task<Void, Never> {
+            for await value in throttled {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        continuation.yield(0)
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        continuation.yield(1)
+        continuation.yield(2)
+        continuation.finish()
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 2)
+    }
+
+    @Test
+    func throttleExecutionStatePreservesBoundaryEmissionOrderAcrossTimerExpiryRace() {
+        var state = ThrottleExecutionState<Int>()
+        state.recordIncomingValue(0, keepLatestPending: true)
+
+        let initialAction = state.nextAction()
+        let initialTimerToken: UInt64
+        switch initialAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 0)
+            #expect(!finishAfterEmit)
+            guard let timerToken else {
+                Issue.record("expected initial throttle emission to schedule a timer")
+                return
+            }
+            initialTimerToken = timerToken
+        case .finish, .idle:
+            Issue.record("expected initial throttle emission")
+            return
+        }
+
+        state.recordIncomingValue(1, keepLatestPending: true)
+        let initialTimerExpired = state.expireTimer(token: initialTimerToken)
+        #expect(initialTimerExpired)
+
+        // Simulate a post-boundary arrival racing in before the drain loop emits
+        // the previous window's trailing value.
+        state.recordIncomingValue(2, keepLatestPending: true)
+
+        let boundaryAction = state.nextAction()
+        let nextTimerToken: UInt64
+        switch boundaryAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 1)
+            #expect(!finishAfterEmit)
+            guard let timerToken else {
+                Issue.record("expected boundary emission to schedule the next timer")
+                return
+            }
+            nextTimerToken = timerToken
+        case .finish, .idle:
+            Issue.record("expected pending boundary value to emit before newer updates")
+            return
+        }
+
+        state.finishSource()
+        let nextTimerExpired = state.expireTimer(token: nextTimerToken)
+        #expect(nextTimerExpired)
+
+        let trailingAction = state.nextAction()
+        switch trailingAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 2)
+            #expect(timerToken == nil)
+            #expect(finishAfterEmit)
+        case .finish, .idle:
+            Issue.record("expected post-boundary update to remain queued for the next interval")
+        }
+    }
+
+    @Test
+    func observationOptionsSetAlgebraPreservesRateLimitMetadata() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(100),
             tolerance: .milliseconds(20),
@@ -1467,15 +1729,19 @@ struct ObservationBridgeTests {
         )
 
         let debounceOnly: ObservationOptions = [.debounce(debounce)]
+        #expect(debounceOnly.rateLimit == .debounce(debounce))
         #expect(debounceOnly.debounce?.interval == .milliseconds(100))
         #expect(debounceOnly.debounce?.tolerance == .milliseconds(20))
         #expect(debounceOnly.debounce?.mode == .immediateFirst)
+        #expect(debounceOnly.throttle == nil)
 
         let sameDebounce = ObservationOptions.debounce(debounce)
         #expect(sameDebounce.rawValue == debounceOnly.rawValue)
         #expect(sameDebounce == debounceOnly)
+        #expect(ObservationOptions.rateLimit(.debounce(debounce)) == sameDebounce)
 
         let roundTrippedDebounce = ObservationOptions(rawValue: debounceOnly.rawValue)
+        #expect(roundTrippedDebounce.rateLimit == .debounce(debounce))
         #expect(roundTrippedDebounce.debounce?.interval == .milliseconds(100))
         #expect(roundTrippedDebounce.debounce?.tolerance == .milliseconds(20))
         #expect(roundTrippedDebounce.debounce?.mode == .immediateFirst)
@@ -1516,15 +1782,18 @@ struct ObservationBridgeTests {
         let conflictingUnionAB = a.union(b)
         let conflictingUnionBA = b.union(a)
         #expect(conflictingUnionAB == conflictingUnionBA)
-        #expect(conflictingUnionAB.hasDebounceConflict)
-        #expect(!a.hasDebounceConflict)
-        #expect(!b.hasDebounceConflict)
+        #expect(conflictingUnionAB.hasRateLimitConflict)
+        #expect(!a.hasRateLimitConflict)
+        #expect(!b.hasRateLimitConflict)
+        #expect(conflictingUnionAB.rateLimit == nil)
         #expect(conflictingUnionAB.debounce == nil)
+        #expect(conflictingUnionAB.throttle == nil)
         #expect(!conflictingUnionAB.contains(a))
         #expect(!conflictingUnionAB.contains(b))
 
         let literalMerged: ObservationOptions = [.debounce(debounce), .debounce(otherDebounce)]
-        #expect(literalMerged.hasDebounceConflict)
+        #expect(literalMerged.hasRateLimitConflict)
+        #expect(literalMerged.rateLimit == nil)
         #expect(literalMerged.debounce == nil)
         #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
 
@@ -1563,6 +1832,38 @@ struct ObservationBridgeTests {
 
         let clearedDebounce = withFlag.subtracting([.debounce(debounce)])
         #expect(clearedDebounce.debounce == nil)
+
+        let throttle = ObservationThrottle(
+            interval: .milliseconds(120),
+            mode: .earliest
+        )
+        let throttleOnly: ObservationOptions = [.throttle(throttle)]
+        #expect(throttleOnly.rateLimit == .throttle(throttle))
+        #expect(throttleOnly.debounce == nil)
+        #expect(throttleOnly.throttle?.interval == .milliseconds(120))
+        #expect(throttleOnly.throttle?.mode == .earliest)
+
+        let sameThrottle = ObservationOptions.throttle(throttle)
+        #expect(sameThrottle == throttleOnly)
+        #expect(ObservationOptions.rateLimit(.throttle(throttle)) == sameThrottle)
+
+        let roundTrippedThrottle = ObservationOptions(rawValue: throttleOnly.rawValue)
+        #expect(roundTrippedThrottle.rateLimit == .throttle(throttle))
+        #expect(roundTrippedThrottle.throttle?.interval == .milliseconds(120))
+        #expect(roundTrippedThrottle.throttle?.mode == .earliest)
+
+        let mixedConflict = debounceOnly.union(throttleOnly)
+        #expect(mixedConflict.hasRateLimitConflict)
+        #expect(mixedConflict.rateLimit == nil)
+        #expect(mixedConflict.debounce == nil)
+        #expect(mixedConflict.throttle == nil)
+        #expect(!mixedConflict.contains(debounceOnly))
+        #expect(!mixedConflict.contains(throttleOnly))
+
+        let literalMixedConflict: ObservationOptions = [.debounce(debounce), .throttle(throttle)]
+        #expect(literalMixedConflict.hasRateLimitConflict)
+        #expect(literalMixedConflict.rateLimit == nil)
+        #expect(literalMixedConflict == ObservationOptions(rawValue: literalMixedConflict.rawValue))
     }
 
     @Test
@@ -1586,6 +1887,46 @@ struct ObservationBridgeTests {
         #expect(submillisecondOptions.contains(canonicalOptions))
         #expect(canonicalOptions.contains(submillisecondOptions))
         #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
+    }
+
+    @Test
+    func observationOptionsThrottleNormalizesSubmillisecondDurations() {
+        let submillisecondThrottle = ObservationThrottle(
+            interval: .microseconds(1_400),
+            mode: .earliest
+        )
+        let canonicalThrottle = ObservationThrottle(
+            interval: .milliseconds(1),
+            mode: .earliest
+        )
+
+        let submillisecondOptions = ObservationOptions.throttle(submillisecondThrottle)
+        let canonicalOptions: ObservationOptions = [.throttle(canonicalThrottle)]
+
+        #expect(submillisecondOptions.throttle?.interval == .milliseconds(1))
+        #expect(submillisecondOptions.throttle?.mode == .earliest)
+        #expect(submillisecondOptions.contains(canonicalOptions))
+        #expect(canonicalOptions.contains(submillisecondOptions))
+        #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
+    }
+
+    @Test
+    func observationOptionsRawValueCanonicalizesLegacyDebounceEncoding() {
+        let legacyRawValue: UInt64 = (1 << 1) | (1 << 2) | (1 << 3) | (100 << 4) | (20 << 32)
+        let canonical = ObservationOptions.debounce(
+            ObservationDebounce(
+                interval: .milliseconds(100),
+                tolerance: .milliseconds(20),
+                mode: .delayedFirst
+            )
+        )
+
+        let options = ObservationOptions(rawValue: legacyRawValue)
+        #expect(options.debounce?.interval == .milliseconds(100))
+        #expect(options.debounce?.tolerance == .milliseconds(20))
+        #expect(options.debounce?.mode == .delayedFirst)
+        #expect(options.rawValue == canonical.rawValue)
+        #expect(options.rawValue != legacyRawValue)
     }
 
     @Test
