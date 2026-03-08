@@ -1661,6 +1661,66 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func throttleExecutionStatePreservesBoundaryEmissionOrderAcrossTimerExpiryRace() {
+        var state = ThrottleExecutionState<Int>()
+        state.recordIncomingValue(0, keepLatestPending: true)
+
+        let initialAction = state.nextAction()
+        let initialTimerToken: UInt64
+        switch initialAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 0)
+            #expect(!finishAfterEmit)
+            guard let timerToken else {
+                Issue.record("expected initial throttle emission to schedule a timer")
+                return
+            }
+            initialTimerToken = timerToken
+        case .finish, .idle:
+            Issue.record("expected initial throttle emission")
+            return
+        }
+
+        state.recordIncomingValue(1, keepLatestPending: true)
+        let initialTimerExpired = state.expireTimer(token: initialTimerToken)
+        #expect(initialTimerExpired)
+
+        // Simulate a post-boundary arrival racing in before the drain loop emits
+        // the previous window's trailing value.
+        state.recordIncomingValue(2, keepLatestPending: true)
+
+        let boundaryAction = state.nextAction()
+        let nextTimerToken: UInt64
+        switch boundaryAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 1)
+            #expect(!finishAfterEmit)
+            guard let timerToken else {
+                Issue.record("expected boundary emission to schedule the next timer")
+                return
+            }
+            nextTimerToken = timerToken
+        case .finish, .idle:
+            Issue.record("expected pending boundary value to emit before newer updates")
+            return
+        }
+
+        state.finishSource()
+        let nextTimerExpired = state.expireTimer(token: nextTimerToken)
+        #expect(nextTimerExpired)
+
+        let trailingAction = state.nextAction()
+        switch trailingAction {
+        case let .emit(value, timerToken, finishAfterEmit):
+            #expect(value == 2)
+            #expect(timerToken == nil)
+            #expect(finishAfterEmit)
+        case .finish, .idle:
+            Issue.record("expected post-boundary update to remain queued for the next interval")
+        }
+    }
+
+    @Test
     func observationOptionsSetAlgebraPreservesRateLimitMetadata() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(100),

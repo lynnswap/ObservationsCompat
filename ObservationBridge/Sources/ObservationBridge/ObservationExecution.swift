@@ -27,12 +27,69 @@ private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var isCancelled = false
 }
 
-private struct ThrottleExecutionState<Value: Sendable>: Sendable {
-    var immediateValue: Value? = nil
+struct ThrottleExecutionState<Value: Sendable>: Sendable {
+    var readyValue: Value? = nil
     var pendingValue: Value? = nil
     var nextTimerToken: UInt64 = 0
     var activeTimerToken: UInt64? = nil
     var isSourceFinished = false
+
+    mutating func recordIncomingValue(
+        _ value: Value,
+        keepLatestPending: Bool
+    ) {
+        if activeTimerToken == nil {
+            if readyValue == nil {
+                readyValue = value
+            } else if pendingValue == nil || keepLatestPending {
+                pendingValue = value
+            }
+        } else if pendingValue == nil || keepLatestPending {
+            pendingValue = value
+        }
+    }
+
+    mutating func finishSource() {
+        isSourceFinished = true
+    }
+
+    mutating func expireTimer(token: UInt64) -> Bool {
+        guard activeTimerToken == token else {
+            return false
+        }
+
+        activeTimerToken = nil
+        if let pendingValue {
+            readyValue = pendingValue
+            self.pendingValue = nil
+        }
+        return true
+    }
+
+    mutating func nextAction() -> ThrottleAction<Value> {
+        if let readyValue {
+            self.readyValue = nil
+            if isSourceFinished, pendingValue == nil {
+                return .emit(value: readyValue, timerToken: nil, finishAfterEmit: true)
+            }
+
+            let timerToken = nextTimerToken
+            nextTimerToken &+= 1
+            activeTimerToken = timerToken
+            return .emit(value: readyValue, timerToken: timerToken, finishAfterEmit: false)
+        }
+
+        if activeTimerToken == nil {
+            if isSourceFinished {
+                return .finish
+            }
+        } else if isSourceFinished, pendingValue == nil {
+            activeTimerToken = nil
+            return .finish
+        }
+
+        return .idle
+    }
 }
 
 private final class ThrottleStateBox<Value: Sendable>: @unchecked Sendable {
@@ -43,7 +100,7 @@ private final class ThrottleStateBox<Value: Sendable>: @unchecked Sendable {
     }
 }
 
-private enum ThrottleAction<Value>: Sendable where Value: Sendable {
+enum ThrottleAction<Value>: Sendable where Value: Sendable {
     case emit(value: Value, timerToken: UInt64?, finishAfterEmit: Bool)
     case finish
     case idle
@@ -943,20 +1000,15 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
                             break
                         }
                         stateBox.state.withLock { state in
-                            if state.activeTimerToken == nil {
-                                if state.immediateValue == nil {
-                                    state.immediateValue = value
-                                } else if state.pendingValue == nil || keepLatestPending {
-                                    state.pendingValue = value
-                                }
-                            } else if state.pendingValue == nil || keepLatestPending {
-                                state.pendingValue = value
-                            }
+                            state.recordIncomingValue(
+                                value,
+                                keepLatestPending: keepLatestPending
+                            )
                         }
                         wakeSignal.yield(())
                     }
                     stateBox.state.withLock { state in
-                        state.isSourceFinished = true
+                        state.finishSource()
                     }
                     wakeSignal.yield(())
                 } catch {
@@ -980,11 +1032,7 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
                             return
                         }
                         let shouldWake = stateBox.state.withLock { state in
-                            guard state.activeTimerToken == timerToken else {
-                                return false
-                            }
-                            state.activeTimerToken = nil
-                            return true
+                            state.expireTimer(token: timerToken)
                         }
                         if shouldWake {
                             wakeSignal.yield(())
@@ -998,40 +1046,7 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
 
             let nextAction = {
                 stateBox.state.withLock { state -> ThrottleAction<S.Element> in
-                    if let immediateValue = state.immediateValue {
-                        state.immediateValue = nil
-                        if state.isSourceFinished, state.pendingValue == nil {
-                            return .emit(value: immediateValue, timerToken: nil, finishAfterEmit: true)
-                        }
-
-                        let timerToken = state.nextTimerToken
-                        state.nextTimerToken &+= 1
-                        state.activeTimerToken = timerToken
-                        return .emit(value: immediateValue, timerToken: timerToken, finishAfterEmit: false)
-                    }
-
-                    if state.activeTimerToken == nil {
-                        if let pendingValue = state.pendingValue {
-                            state.pendingValue = nil
-                            if state.isSourceFinished {
-                                return .emit(value: pendingValue, timerToken: nil, finishAfterEmit: true)
-                            }
-
-                            let timerToken = state.nextTimerToken
-                            state.nextTimerToken &+= 1
-                            state.activeTimerToken = timerToken
-                            return .emit(value: pendingValue, timerToken: timerToken, finishAfterEmit: false)
-                        }
-
-                        if state.isSourceFinished {
-                            return .finish
-                        }
-                    } else if state.isSourceFinished, state.pendingValue == nil {
-                        state.activeTimerToken = nil
-                        return .finish
-                    }
-
-                    return .idle
+                    state.nextAction()
                 }
             }
 
