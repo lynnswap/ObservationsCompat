@@ -56,6 +56,11 @@ private final class MainActorCounterModel {
     var value: Int = 0
 }
 
+@MainActor
+private final class MainActorHandleHolder {
+    var handles: Set<ObservationHandle> = []
+}
+
 private final class NonSendablePayload {
     let value: Int
 
@@ -2159,6 +2164,53 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
+    func observeStoreInSetCancelsWhenOwnerDeinitializes() async {
+#if canImport(ObjectiveC)
+        let deinitFlag = DeinitFlag()
+        var values: [Int] = []
+        var cancellables = Set<ObservationHandle>()
+        weak var weakModel: DeinitProbeCounterModel?
+
+        do {
+            let model = DeinitProbeCounterModel {
+                Task {
+                    await deinitFlag.mark()
+                }
+            }
+            weakModel = model
+
+            model.observe(\.value, options: []) { value in
+                values.append(value)
+            }
+            .store(in: &cancellables)
+
+            let initialDeadline = ContinuousClock().now + .seconds(2)
+            while values.isEmpty, ContinuousClock().now < initialDeadline {
+                await Task.yield()
+            }
+            #expect(values == [0])
+        }
+
+        let deinitDeadline = ContinuousClock().now + .seconds(2)
+        while !(await deinitFlag.didDeinit), ContinuousClock().now < deinitDeadline {
+            await Task.yield()
+        }
+        #expect(await deinitFlag.didDeinit)
+
+        let ownerReleaseDeadline = ContinuousClock().now + .seconds(2)
+        while weakModel != nil, ContinuousClock().now < ownerReleaseDeadline {
+            await Task.yield()
+        }
+        #expect(weakModel == nil)
+
+        cancellables.removeAll(keepingCapacity: false)
+#else
+        return
+#endif
+    }
+
+    @Test
     func observeTaskStoreInSetCancelsWhenOwnerDeinitializes() async {
 #if canImport(ObjectiveC)
         let started = ValueQueue<Int>()
@@ -2209,6 +2261,51 @@ struct ObservationBridgeTests {
 #else
         return
 #endif
+    }
+
+    @Test
+    @MainActor
+    func mainActorHandleHolderReleaseStopsObserveAndObserveTaskPipelines() async {
+        let model = MainActorCounterModel()
+        var observedValues: [Int] = []
+        var observedTaskValues: [Int] = []
+        weak var weakHolder: MainActorHandleHolder?
+
+        do {
+            let holder = MainActorHandleHolder()
+            weakHolder = holder
+
+            model.observe(\.value, options: []) { value in
+                observedValues.append(value)
+            }
+            .store(in: &holder.handles)
+
+            model.observeTask(\.value, options: []) { value in
+                observedTaskValues.append(value)
+            }
+            .store(in: &holder.handles)
+
+            let initialDeadline = ContinuousClock().now + .seconds(2)
+            while (observedValues.isEmpty || observedTaskValues.isEmpty), ContinuousClock().now < initialDeadline {
+                await Task.yield()
+            }
+            #expect(observedValues == [0])
+            #expect(observedTaskValues == [0])
+        }
+
+        let holderReleaseDeadline = ContinuousClock().now + .seconds(2)
+        while weakHolder != nil, ContinuousClock().now < holderReleaseDeadline {
+            await Task.yield()
+        }
+        #expect(weakHolder == nil)
+
+        model.value = 7
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        #expect(observedValues == [0])
+        #expect(observedTaskValues == [0])
     }
 
     @Test
@@ -2785,5 +2882,48 @@ struct ObservationBridgeStressTests {
         }
         #expect(result.completed)
         #expect(result.firstFailure == nil)
+    }
+
+    @Test
+    func mainActorHandleHolderReleaseStressDoesNotCrash() async {
+#if canImport(ObjectiveC)
+        for iteration in 0..<200 {
+            let model = MainActorCounterModel()
+            weak var weakHolder: MainActorHandleHolder?
+            var observeCount = 0
+            var observeTaskCount = 0
+
+            do {
+                let holder = MainActorHandleHolder()
+                weakHolder = holder
+
+                model.observe(\.value, options: []) { _ in
+                    observeCount += 1
+                }
+                .store(in: &holder.handles)
+
+                model.observeTask(\.value, options: []) { _ in
+                    observeTaskCount += 1
+                }
+                .store(in: &holder.handles)
+
+                let initialDeadline = ContinuousClock().now + .seconds(2)
+                while (observeCount == 0 || observeTaskCount == 0), ContinuousClock().now < initialDeadline {
+                    await Task.yield()
+                }
+            }
+
+            let releaseDeadline = ContinuousClock().now + .seconds(2)
+            while weakHolder != nil, ContinuousClock().now < releaseDeadline {
+                await Task.yield()
+            }
+
+            #expect(weakHolder == nil, "iteration \(iteration)")
+            #expect(observeCount > 0, "iteration \(iteration)")
+            #expect(observeTaskCount > 0, "iteration \(iteration)")
+        }
+#else
+        return
+#endif
     }
 }

@@ -27,6 +27,47 @@ private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var isCancelled = false
 }
 
+private final class ObservationExecutionLifetime: Sendable {
+    private struct State {
+        var isCancelled = false
+        var handlers: [@Sendable () -> Void] = []
+    }
+
+    private let state = Mutex(State())
+
+    func addCancellationHandler(_ handler: @escaping @Sendable () -> Void) {
+        let shouldRunImmediately = state.withLock { state in
+            if state.isCancelled {
+                return true
+            }
+
+            state.handlers.append(handler)
+            return false
+        }
+
+        if shouldRunImmediately {
+            handler()
+        }
+    }
+
+    func cancel() {
+        let handlersToRun = state.withLock { state in
+            if state.isCancelled {
+                return [@Sendable () -> Void]()
+            }
+
+            state.isCancelled = true
+            let handlers = state.handlers
+            state.handlers = []
+            return handlers
+        }
+
+        for handler in handlersToRun {
+            handler()
+        }
+    }
+}
+
 struct ThrottleExecutionState<Value: Sendable>: Sendable {
     var readyValue: Value? = nil
     var pendingValue: Value? = nil
@@ -175,20 +216,23 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let lifetime = ObservationExecutionLifetime()
+    lifetime.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
     let monitorTask = Task {
-        defer {
-            WeakOwnerRegistry.removeToken(ownerToken)
-        }
-
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
             isolation: isolation,
             of: value
         )
-        defer {
+        lifetime.addCancellationHandler {
             observedValues.producerTask.cancel()
             observedValues.channel.finish()
+        }
+        defer {
+            lifetime.cancel()
         }
 
         var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
@@ -223,9 +267,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
 
     let handle = ObservationHandle {
         monitorTask.cancel()
-    }
-    handle.box.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
+        lifetime.cancel()
     }
 
     OwnerCancellationRegistry.register(handle.box, owner: owner)
@@ -245,9 +287,13 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
     _ = options
 
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let lifetime = ObservationExecutionLifetime()
+    lifetime.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
     let monitorTask = Task {
         defer {
-            WeakOwnerRegistry.removeToken(ownerToken)
+            lifetime.cancel()
         }
 
         let observedValues = makeObservedValueStreamNonSendable(
@@ -288,9 +334,7 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
 
     let handle = ObservationHandle {
         monitorTask.cancel()
-    }
-    handle.box.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
+        lifetime.cancel()
     }
 
     OwnerCancellationRegistry.register(handle.box, owner: owner)
@@ -308,6 +352,10 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let lifetime = ObservationExecutionLifetime()
+    lifetime.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
     let observeTaskState = Mutex(ObserveTaskExecutionState<Value>())
     let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(
         bufferingPolicy: .bufferingNewest(1)
@@ -464,21 +512,24 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         }
         remainingTask?.cancel()
     }
+    lifetime.addCancellationHandler {
+        shutdownObserveTaskExecution()
+        drainTask.cancel()
+    }
 
     let monitorTask = Task {
-        defer {
-            WeakOwnerRegistry.removeToken(ownerToken)
-        }
-
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
             isolation: isolation,
             of: value
         )
-        defer {
+        lifetime.addCancellationHandler {
             observedValues.producerTask.cancel()
             observedValues.channel.finish()
+        }
+        defer {
+            lifetime.cancel()
         }
 
         var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
@@ -513,17 +564,11 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 }
             }
         }
-
-        shutdownObserveTaskExecution()
     }
 
     let handle = ObservationHandle {
         monitorTask.cancel()
-        drainTask.cancel()
-        shutdownObserveTaskExecution()
-    }
-    handle.box.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
+        lifetime.cancel()
     }
 
     OwnerCancellationRegistry.register(handle.box, owner: owner)
@@ -543,6 +588,10 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
     _ = options
 
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let lifetime = ObservationExecutionLifetime()
+    lifetime.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
     let observeTaskState = Mutex(ObserveTaskExecutionState<_UncheckedSendableValueBox<Value>>())
     let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(
         bufferingPolicy: .bufferingNewest(1)
@@ -700,10 +749,14 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
         }
         remainingTask?.cancel()
     }
+    lifetime.addCancellationHandler {
+        shutdownObserveTaskExecution()
+        drainTask.cancel()
+    }
 
     let monitorTask = Task {
         defer {
-            WeakOwnerRegistry.removeToken(ownerToken)
+            lifetime.cancel()
         }
 
         let observedValues = makeObservedValueStreamNonSendable(
@@ -744,17 +797,11 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                 }
             }
         }
-
-        shutdownObserveTaskExecution()
     }
 
     let handle = ObservationHandle {
         monitorTask.cancel()
-        drainTask.cancel()
-        shutdownObserveTaskExecution()
-    }
-    handle.box.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
+        lifetime.cancel()
     }
 
     OwnerCancellationRegistry.register(handle.box, owner: owner)
