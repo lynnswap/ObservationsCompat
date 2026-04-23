@@ -5,7 +5,7 @@ import Testing
 @testable import ObservationBridge
 
 @Observable
-private final class CounterModel {
+private final class CounterModel: @unchecked Sendable {
     var value: Int = 0
     var secondaryValue: Int = 0
     var isEnabled: Bool = false
@@ -46,7 +46,7 @@ private final class LockedCounterModel: Sendable {
 }
 
 @Observable
-private final class OptionalCounterModel {
+private final class OptionalCounterModel: @unchecked Sendable {
     var value: Int? = nil
 }
 
@@ -75,13 +75,8 @@ private final class MainActorNonSendablePayloadModel {
     var payload = NonSendablePayload(value: 0)
 }
 
-private struct CounterSnapshot: Sendable, Equatable {
-    let value: Int
-    let isEnabled: Bool
-}
-
 @Observable
-private final class DeinitProbeCounterModel {
+private final class DeinitProbeCounterModel: @unchecked Sendable {
     var value: Int = 0
     private let onDeinit: @Sendable () -> Void
 
@@ -444,6 +439,20 @@ private func waitUntilValueReceived<Value: Sendable & Equatable>(
     return reached == true
 }
 
+private func waitUntilCondition(
+    nanoseconds: UInt64 = 5_000_000_000,
+    _ condition: @escaping @Sendable () -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock().now + .nanoseconds(Int64(nanoseconds))
+    while ContinuousClock().now < deadline {
+        if condition() {
+            return true
+        }
+        await Task.yield()
+    }
+    return condition()
+}
+
 @MainActor
 private func waitUntilMainActorCondition(
     nanoseconds: UInt64 = 5_000_000_000,
@@ -577,9 +586,8 @@ private func runRandomizedObservationStress(
     return (true, workers, outcome.firstFailure)
 }
 
-@MainActor
 @Suite
-struct ObservationBridgeTests {
+final class ObservationBridgeTests {
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
         let model = CounterModel()
@@ -672,7 +680,7 @@ struct ObservationBridgeTests {
         }
 
         let model = CounterModel()
-        let stream = ObservationBridge(options: []) {
+        let stream = ObservationBridge {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -826,63 +834,6 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observationBridgeRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
-        let model = CounterModel()
-        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
-            model.parity
-        }
-        let queue = ValueQueue<Int>()
-        let consumer = Task<Void, Never> {
-            var iterator = stream.makeAsyncIterator()
-            while !Task.isCancelled, let value = await iterator.next() {
-                await queue.push(value)
-            }
-        }
-        defer { consumer.cancel() }
-
-        #expect(await nextWithTimeout(from: queue) == 0)
-
-        model.value = 1
-        #expect(await nextWithTimeout(from: queue) == 1)
-
-        model.value = 3
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
-
-        model.value = 2
-        #expect(await nextWithTimeout(from: queue) == 0)
-    }
-
-    @Test
-    func observationBridgeRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
-        let model = OptionalCounterModel()
-        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
-            model.value
-        }
-        let queue = ValueQueue<Int?>()
-        let consumer = Task<Void, Never> {
-            var iterator = stream.makeAsyncIterator()
-            while !Task.isCancelled, let value = await iterator.next() {
-                await queue.push(value)
-            }
-        }
-        defer { consumer.cancel() }
-
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
-
-        model.value = 1
-        #expect(await nextWithTimeout(from: queue) == 1)
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
-    }
-
-    @Test
     func observationBridgeDebounceImmediateFirstSupportsDeterministicClockControl() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
@@ -919,16 +870,16 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observationBridgeRemoveDuplicatesAppliesToDebouncedOutputs() async {
+    func observationBridgeDebounceStillEmitsDuplicateDerivedOutputs() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.removeDuplicates, .rateLimit(.debounce(debounce))]),
+            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
             clock: clock
         ) {
-            model.value
+            model.parity
         }
         let consumer = Task<Void, Never> {
             var iterator = stream.makeAsyncIterator()
@@ -944,17 +895,13 @@ struct ObservationBridgeTests {
         model.value = 2
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(200))
-        #expect(await nextWithTimeout(from: queue) == 2)
-
-        model.value = 2
-        await Task.yield()
-        clock.advance(by: .milliseconds(200))
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 3
+        model.value = 4
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(200))
-        #expect(await nextWithTimeout(from: queue) == 3)
+        #expect(await nextWithTimeout(from: queue) == 0)
     }
 
     @Test
@@ -1083,37 +1030,6 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
-        let model = CounterModel()
-        let recorder = ValueRecorder<Int>()
-
-        let handle = model.observe(
-            \.parity,
-            options: [.removeDuplicates]
-        ) { value in
-            recorder.append(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await waitUntilCount(1, in: recorder))
-        #expect(recorder.snapshot() == [0])
-
-        model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
-
-        await Task.yield()
-        model.value = 3
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
-        #expect(recorder.count() == 2)
-
-        model.value = 2
-        #expect(await waitUntilCount(3, in: recorder))
-        #expect(recorder.snapshot().prefix(3).elementsEqual([0, 1, 0]))
-    }
-
-    @Test
     func observeSingleKeyPathNoArgEmitsInitialAndSubsequentChanges() async {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
@@ -1129,32 +1045,6 @@ struct ObservationBridgeTests {
         #expect(await waitUntilCount(2, in: recorder))
 
         model.value = 9
-        #expect(await waitUntilCount(3, in: recorder))
-    }
-
-    @Test
-    func observeSingleKeyPathNoArgSupportsRemoveDuplicates() async {
-        let model = CounterModel()
-        let recorder = ValueRecorder<Int>()
-
-        let handle = model.observe(
-            \.parity,
-            options: [.removeDuplicates]
-        ) {
-            recorder.append(1)
-        }
-        defer { handle.cancel() }
-
-        #expect(await waitUntilCount(1, in: recorder))
-
-        model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-
-        model.value = 3
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        #expect(recorder.count() == 2)
-
-        model.value = 2
         #expect(await waitUntilCount(3, in: recorder))
     }
 
@@ -1182,7 +1072,7 @@ struct ObservationBridgeTests {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int?>()
 
-        let handle = model.observe(\.value, options: [.removeDuplicates]) { value in
+        let handle = model.observe(\.value, options: []) { value in
             recorder.append(value)
         }
         defer { handle.cancel() }
@@ -1207,11 +1097,11 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskOptionalKeyPathNoArgSupportsRemoveDuplicates() async {
+    func observeTaskOptionalKeyPathNoArgIgnoresUnchangedNilAssignments() async {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask(\.value, options: [.removeDuplicates]) {
+        let handle = model.observeTask(\.value, options: []) {
             recorder.append(1)
         }
         defer { handle.cancel() }
@@ -1231,34 +1121,6 @@ struct ObservationBridgeTests {
         model.value = nil
         try? await Task.sleep(nanoseconds: 300_000_000)
         #expect(recorder.count() == 3)
-    }
-
-    @Test
-    func observeTaskRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
-        let model = OptionalCounterModel()
-        let queue = ValueQueue<Int?>()
-
-        let handle = model.observeTask(
-            \.value,
-            options: [.removeDuplicates]
-        ) { value in
-            await queue.push(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
-
-        model.value = 1
-        #expect(await nextWithTimeout(from: queue) == 1)
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
-        model.value = nil
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
@@ -1429,6 +1291,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1436,7 +1299,7 @@ struct ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let handle = model.observe(\.value, options: [.removeDuplicates]) { value in
+        let handle = model.observe(\.value, options: []) { value in
             MainActor.assertIsolated()
             recorder.append(value)
         }
@@ -1451,6 +1314,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeNoArgMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1458,7 +1322,7 @@ struct ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let handle = model.observe(\.value, options: [.removeDuplicates]) {
+        let handle = model.observe(\.value, options: []) {
             MainActor.assertIsolated()
             recorder.append(1)
         }
@@ -1475,6 +1339,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1482,7 +1347,7 @@ struct ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
+        let handle = model.observeTask(\.value, options: []) { value in
             MainActor.assertIsolated()
             await queue.push(value)
         }
@@ -1498,6 +1363,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskNoArgMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1505,7 +1371,7 @@ struct ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let handle = model.observeTask(\.value, options: [.removeDuplicates]) {
+        let handle = model.observeTask(\.value, options: []) {
             MainActor.assertIsolated()
             await queue.push(1)
         }
@@ -1521,6 +1387,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskKeyPathGetterDoesNotUseCallbackActorIsolation() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1529,7 +1396,7 @@ struct ObservationBridgeTests {
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
         let handle = await MainActor.run {
-            model.observeTask(\.value, options: [.removeDuplicates]) { @AlternateGlobalActor value in
+            model.observeTask(\.value, options: []) { @AlternateGlobalActor value in
                 await queue.push(value)
             }
         }
@@ -1544,6 +1411,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeImplPrefersValueIsolationOverCallbackIsolation() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1559,8 +1427,7 @@ struct ObservationBridgeTests {
 
         let handle = observeImpl(
             owner: model,
-            options: [.removeDuplicates],
-            duplicateFilter: { @Sendable lhs, rhs in lhs == rhs },
+            options: [],
             rateLimit: nil,
             rateLimitClock: ContinuousClock(),
             isolation: callbackIsolation,
@@ -1578,7 +1445,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskDebounceAndRemoveDuplicatesSuppressesPostDebounceDuplicateOutputs() async {
+    func observeTaskDebounceEmitsPostDebounceDuplicateOutputs() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
@@ -1586,7 +1453,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.parity,
-            options: [.removeDuplicates, .rateLimit(.debounce(debounce))],
+            options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1600,11 +1467,11 @@ struct ObservationBridgeTests {
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(200))
 
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        #expect(await nextWithTimeout(from: queue) == 0)
     }
 
     @Test
-    func observeTaskThrottleAndRemoveDuplicatesSuppressesPostThrottleDuplicateOutputs() async {
+    func observeTaskThrottleEmitsPostThrottleDuplicateOutputs() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
@@ -1612,7 +1479,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.parity,
-            options: [.removeDuplicates, .rateLimit(.throttle(throttle))],
+            options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1626,7 +1493,7 @@ struct ObservationBridgeTests {
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(200))
 
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        #expect(await nextWithTimeout(from: queue) == 0)
     }
 
     @Test
@@ -1744,33 +1611,39 @@ struct ObservationBridgeTests {
         let roundTrippedDebounce = ObservationOptions(rawValue: debounceOnly.rawValue)
         #expect(roundTrippedDebounce.rateLimit == .debounce(debounce))
 
-        let withFlag = debounceOnly.union([.removeDuplicates])
-        #expect(withFlag.contains(.removeDuplicates))
-        #expect(withFlag.rateLimit == .debounce(debounce))
+        let tombstonedRemoveDuplicatesBit: UInt64 = 1 << 0
+        let tombstonedOnly = ObservationOptions(rawValue: tombstonedRemoveDuplicatesBit)
+        #expect(tombstonedOnly == ObservationOptions())
+        #expect(tombstonedOnly.rawValue == 0)
 
+        let tombstonedDebounce = ObservationOptions(rawValue: tombstonedRemoveDuplicatesBit | debounceOnly.rawValue)
+        #expect(tombstonedDebounce == debounceOnly)
+        #expect(tombstonedDebounce.rawValue == debounceOnly.rawValue)
+
+        let withLegacy: ObservationOptions
         if #available(iOS 26.0, macOS 26.0, *) {
             let legacyOnly: ObservationOptions = [.legacyBackend]
             #expect(legacyOnly.contains(.legacyBackend))
 
-            let withLegacy = withFlag.union(legacyOnly)
+            withLegacy = debounceOnly.union(legacyOnly)
             #expect(withLegacy.contains(.legacyBackend))
-            #expect(withLegacy.contains(.removeDuplicates))
+            #expect(withLegacy.rateLimit == .debounce(debounce))
 
             let legacyRoundTrip = ObservationOptions(rawValue: withLegacy.rawValue)
             #expect(legacyRoundTrip.contains(.legacyBackend))
+            #expect(legacyRoundTrip.rateLimit == .debounce(debounce))
 
             let withoutLegacy = withLegacy.subtracting([.legacyBackend])
             #expect(!withoutLegacy.contains(.legacyBackend))
+            #expect(withoutLegacy.rateLimit == .debounce(debounce))
+        } else {
+            withLegacy = debounceOnly
         }
 
-        let roundTrippedWithFlag = ObservationOptions(rawValue: withFlag.rawValue)
-        #expect(roundTrippedWithFlag.contains(.removeDuplicates))
-        #expect(roundTrippedWithFlag.rateLimit == .debounce(debounce))
-
         let otherDebounce = ObservationDebounce(interval: .milliseconds(150), mode: .delayedFirst)
-        #expect(!withFlag.contains(.rateLimit(.debounce(otherDebounce))))
+        #expect(!withLegacy.contains(.rateLimit(.debounce(otherDebounce))))
 
-        var unchanged = withFlag
+        var unchanged = withLegacy
         let removedDifferentDebounce = unchanged.remove(.rateLimit(.debounce(otherDebounce)))
         #expect(removedDifferentDebounce == nil)
         #expect(unchanged.rateLimit == .debounce(debounce))
@@ -1814,21 +1687,10 @@ struct ObservationBridgeTests {
         #expect(symmetricAB == symmetricBA)
         #expect(symmetricAB.rateLimit == nil)
 
-        let intersected = withFlag.intersection([.rateLimit(.debounce(debounce))])
-        #expect(!intersected.contains(.removeDuplicates))
+        let intersected = withLegacy.intersection([.rateLimit(.debounce(debounce))])
         #expect(intersected.rateLimit == .debounce(debounce))
 
-        let withoutFlag = withFlag.subtracting([.removeDuplicates])
-        #expect(!withoutFlag.contains(.removeDuplicates))
-        #expect(withoutFlag.rateLimit == .debounce(debounce))
-
-        var removedFlag = withFlag
-        let removed = removedFlag.remove(.removeDuplicates)
-        #expect(removed != nil)
-        #expect(!removedFlag.contains(.removeDuplicates))
-        #expect(removedFlag.rateLimit == .debounce(debounce))
-
-        let clearedDebounce = withFlag.subtracting([.rateLimit(.debounce(debounce))])
+        let clearedDebounce = withLegacy.subtracting([.rateLimit(.debounce(debounce))])
         #expect(clearedDebounce.rateLimit == nil)
 
         let throttle = ObservationThrottle(
@@ -1932,99 +1794,6 @@ struct ObservationBridgeTests {
         #expect(deprecatedOptions == canonicalOptions)
         #expect(deprecatedOptions.rawValue == canonicalOptions.rawValue)
         #expect(deprecatedOptions.debounce == debounce)
-    }
-
-    @Test
-    func observeMultipleKeyPathValueProjectionSupportsRemoveDuplicates() async {
-        let model = CounterModel()
-        let recorder = ValueRecorder<CounterSnapshot>()
-
-        let handle = model.observe(
-            [\.value, \.isEnabled],
-            options: [.removeDuplicates],
-            of: { owner in
-                CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
-            }
-        ) { snapshot in
-            recorder.append(snapshot)
-        }
-        defer { handle.cancel() }
-
-        #expect(await waitUntilCount(1, in: recorder))
-        #expect(recorder.snapshot() == [CounterSnapshot(value: 0, isEnabled: false)])
-
-        model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(
-            recorder.snapshot().prefix(2).elementsEqual([
-                CounterSnapshot(value: 0, isEnabled: false),
-                CounterSnapshot(value: 1, isEnabled: false)
-            ])
-        )
-
-        model.value = 1
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        #expect(recorder.count() == 2)
-
-        model.isEnabled = true
-        #expect(await waitUntilCount(3, in: recorder))
-        #expect(
-            recorder.snapshot().prefix(3).elementsEqual([
-                CounterSnapshot(value: 0, isEnabled: false),
-                CounterSnapshot(value: 1, isEnabled: false),
-                CounterSnapshot(value: 1, isEnabled: true)
-            ])
-        )
-    }
-
-    @Test
-    func observeTaskMultipleKeyPathValueProjectionSupportsDebounce() async {
-        let model = CounterModel()
-        let queue = ValueQueue<CounterSnapshot>()
-        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-
-        let handle = model.observeTask(
-            [\.value, \.isEnabled],
-            options: [.rateLimit(.debounce(debounce))],
-            of: { owner in
-                CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
-            }
-        ) { value in
-            await queue.push(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await nextWithTimeout(from: queue) == CounterSnapshot(value: 0, isEnabled: false))
-
-        model.value = 1
-        model.isEnabled = true
-        model.value = 2
-
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 2_000_000_000) == CounterSnapshot(value: 2, isEnabled: true))
-    }
-
-    @Test
-    func observeTaskMultipleKeyPathValueProjectionSupportsOptionalNilValues() async {
-        let model = CounterModel()
-        let queue = ValueQueue<String?>()
-
-        let handle = model.observeTask(
-            [\.name, \.isEnabled],
-            options: [],
-            of: { owner in
-                owner.isEnabled ? owner.name : nil
-            }
-        ) { value in
-            await queue.push(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
-        model.name = "hello"
-        model.isEnabled = true
-        #expect(await waitUntilValueReceived(.some("hello"), from: queue))
     }
 
     @Test
@@ -2451,86 +2220,6 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskCoalescingPreservesRemoveDuplicatesAcrossInFlightTask() async {
-        let model = CounterModel()
-        let started = ValueQueue<Int>()
-        let completed = ValueQueue<Int>()
-        let gate = OperationGate()
-
-        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
-            await started.push(value)
-            await gate.wait(for: value)
-            guard !Task.isCancelled else {
-                return
-            }
-            await completed.push(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await nextWithTimeout(from: started) == 0)
-
-        model.value = 1
-        await Task.yield()
-        model.value = 0
-        await Task.yield()
-
-        await gate.release(0)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
-        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
-
-        await gate.release(1)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
-        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 0)
-
-        await gate.release(0)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
-        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
-
-        model.value = 2
-        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 2)
-
-        await gate.release(2)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
-    }
-
-    @Test
-    func observeTaskCoalescingRetainsLatestDistinctBacklogValueForRemoveDuplicates() async {
-        let model = CounterModel()
-        let started = ValueQueue<Int>()
-        let completed = ValueQueue<Int>()
-        let gate = OperationGate()
-
-        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
-            await started.push(value)
-            await gate.wait(for: value)
-            guard !Task.isCancelled else {
-                return
-            }
-            await completed.push(value)
-        }
-        defer { handle.cancel() }
-
-        #expect(await nextWithTimeout(from: started) == 0)
-
-        model.value = 1
-        await Task.yield()
-        model.value = 2
-        await Task.yield()
-        model.value = 1
-        await Task.yield()
-
-        await gate.release(0)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
-        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
-
-        await gate.release(1)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
-        #expect(await nextWithTimeout(from: started, nanoseconds: 300_000_000) == nil)
-        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
-    }
-
-    @Test
     func observeTaskDebounceProcessesSelectedValuesWithoutCancellation() async {
         let model = CounterModel()
         let started = ValueQueue<Int>()
@@ -2608,6 +2297,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeSupportsNonSendableValuesOnMainActorIsolation() async {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
@@ -2627,6 +2317,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskSupportsNonSendableValuesOnMainActorIsolation() async {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
@@ -2646,6 +2337,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskSupportsSequentialNonSendableValuesOnMainActorIsolation() async {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
@@ -2668,6 +2360,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskCoalescesBurstNonSendableValuesWhileCurrentTaskIsRunning() async {
         let model = MainActorNonSendablePayloadModel()
         let started = ValueQueue<Int>()
@@ -2720,6 +2413,7 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    @MainActor
     func observeTaskCancelsInFlightNonSendableTaskOnHandleCancel() async {
         let model = MainActorNonSendablePayloadModel()
         let started = ValueQueue<Int>()
@@ -2747,39 +2441,9 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observationBridgeSupportsNonSendableValuesOnMainActorIsolation() async {
-        let model = MainActorNonSendablePayloadModel()
-        let stream = ObservationBridge(options: []) {
-            model.payload
-        }
-
-        var observedValues: [Int] = []
-        let consumer = Task { @MainActor in
-            var iterator = stream.makeAsyncIterator()
-            while !Task.isCancelled, let payload = await iterator.next() {
-                observedValues.append(payload.value)
-                if observedValues.count >= 2 {
-                    break
-                }
-            }
-        }
-        defer { consumer.cancel() }
-
-        #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
-        #expect(observedValues.first == 0)
-
-        model.payload = NonSendablePayload(value: 3)
-        #expect(await waitUntilMainActorCondition { observedValues.count >= 2 })
-        #expect(observedValues.prefix(2).elementsEqual([0, 3]))
-
-        consumer.cancel()
-        await consumer.value
-    }
-
-    @Test
     func observationBridgeIteratorsReceiveIndependentInitialAndUpdatedValues() async {
         let model = CounterModel()
-        let stream = ObservationBridge(options: []) {
+        let stream = ObservationBridge {
             model.value
         }
         let firstQueue = ValueQueue<Int>()
@@ -2839,9 +2503,8 @@ struct ObservationBridgeTests {
 
 }
 
-@MainActor
 @Suite(.serialized)
-struct ObservationBridgeStressTests {
+final class ObservationBridgeStressTests {
     @Test
     func legacyBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
         let iterations = 1_000_000
@@ -2885,6 +2548,7 @@ struct ObservationBridgeStressTests {
     }
 
     @Test
+    @MainActor
     func mainActorHandleHolderReleaseStressDoesNotCrash() async {
 #if canImport(ObjectiveC)
         for iteration in 0..<200 {

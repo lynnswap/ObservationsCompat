@@ -46,7 +46,9 @@ public enum ObservationRateLimit: Sendable, Hashable {
 }
 
 public struct ObservationOptions: OptionSet, Sendable {
-    private static let removeDuplicatesFlag: UInt64 = 1 << 0
+    // Tombstone for the removed `.removeDuplicates` option. Keep the bit reserved so
+    // `ObservationOptions(rawValue:)` can safely canonicalize older serialized values.
+    private static let removedRemoveDuplicatesFlag: UInt64 = 1 << 0
     private static let rateLimitFlag: UInt64 = 1 << 1
     private static let rateLimitModeFlag: UInt64 = 1 << 2
     private static let rateLimitTolerancePresentFlag: UInt64 = 1 << 3
@@ -67,7 +69,7 @@ public struct ObservationOptions: OptionSet, Sendable {
     private static let legacyDebounceToleranceShift: UInt64 = legacyDebounceIntervalShift + rateLimitPayloadBitWidth
     private static let legacyDebounceIntervalMask: UInt64 = rateLimitPayloadMask << legacyDebounceIntervalShift
     private static let legacyDebounceToleranceMask: UInt64 = rateLimitPayloadMask << legacyDebounceToleranceShift
-    private static let membershipMask: UInt64 = removeDuplicatesFlag | rateLimitFlag | legacyBackendFlag
+    private static let membershipMask: UInt64 = rateLimitFlag | legacyBackendFlag
 
     public let rawValue: UInt64
     private let rateLimitConfiguration: ObservationRateLimit?
@@ -80,12 +82,11 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     public init(rawValue: UInt64) {
-        let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0
+        _ = rawValue & Self.removedRemoveDuplicatesFlag
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0
         let hasConflictingRateLimit = (rawValue & Self.conflictingRateLimitFlag) != 0
         let rateLimitConfiguration = hasConflictingRateLimit ? nil : Self.decodeRateLimitConfiguration(from: rawValue)
         self.rawValue = Self.encodeRawValue(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: rateLimitConfiguration,
             hasConflictingRateLimit: hasConflictingRateLimit
@@ -95,7 +96,6 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     private init(
-        removeDuplicates: Bool,
         usesLegacyBackend: Bool,
         rateLimitConfiguration: ObservationRateLimit?,
         hasConflictingRateLimit: Bool = false
@@ -104,7 +104,6 @@ public struct ObservationOptions: OptionSet, Sendable {
             ? nil
             : Self.normalizeRateLimitConfiguration(rateLimitConfiguration)
         self.rawValue = Self.encodeRawValue(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: normalizedRateLimitConfiguration,
             hasConflictingRateLimit: hasConflictingRateLimit
@@ -121,13 +120,11 @@ public struct ObservationOptions: OptionSet, Sendable {
         self = merged
     }
 
-    public static let removeDuplicates = ObservationOptions(rawValue: removeDuplicatesFlag)
-
     @available(iOS 26.0, macOS 26.0, *)
     public static let legacyBackend = ObservationOptions(rawValue: legacyBackendFlag)
 
     public static func rateLimit(_ configuration: ObservationRateLimit) -> ObservationOptions {
-        ObservationOptions(removeDuplicates: false, usesLegacyBackend: false, rateLimitConfiguration: configuration)
+        ObservationOptions(usesLegacyBackend: false, rateLimitConfiguration: configuration)
     }
 
     @available(*, deprecated, message: "Use .rateLimit(.debounce(configuration)) instead.")
@@ -178,7 +175,6 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     public func union(_ other: ObservationOptions) -> ObservationOptions {
-        let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 || (other.rawValue & Self.removeDuplicatesFlag) != 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 || (other.rawValue & Self.legacyBackendFlag) != 0
         let mergedRateLimit = Self.mergeRateLimit(
             lhs: rateLimitConfiguration,
@@ -187,7 +183,6 @@ public struct ObservationOptions: OptionSet, Sendable {
             rhsConflicting: other.hasConflictingRateLimit
         )
         return ObservationOptions(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: mergedRateLimit.configuration,
             hasConflictingRateLimit: mergedRateLimit.hasConflict
@@ -199,12 +194,10 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     public func intersection(_ other: ObservationOptions) -> ObservationOptions {
-        let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) != 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) != 0
         let intersectedConflict = hasConflictingRateLimit && other.hasConflictingRateLimit
         let intersectedRateLimit = intersectedConflict ? nil : (rateLimitConfiguration == other.rateLimitConfiguration ? rateLimitConfiguration : nil)
         return ObservationOptions(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: intersectedRateLimit,
             hasConflictingRateLimit: intersectedConflict
@@ -216,7 +209,6 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     public func symmetricDifference(_ other: ObservationOptions) -> ObservationOptions {
-        let removeDuplicates = ((rawValue & Self.removeDuplicatesFlag) != 0) != ((other.rawValue & Self.removeDuplicatesFlag) != 0)
         let usesLegacyBackend = ((rawValue & Self.legacyBackendFlag) != 0) != ((other.rawValue & Self.legacyBackendFlag) != 0)
         let resultingConflict = hasConflictingRateLimit != other.hasConflictingRateLimit
         let resultingRateLimit: ObservationRateLimit?
@@ -236,7 +228,6 @@ public struct ObservationOptions: OptionSet, Sendable {
         }
 
         return ObservationOptions(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: resultingRateLimit,
             hasConflictingRateLimit: resultingConflict
@@ -248,7 +239,6 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     public func subtracting(_ other: ObservationOptions) -> ObservationOptions {
-        let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) == 0
         let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) == 0
         let resultingConflict: Bool
         let resultingRateLimit: ObservationRateLimit?
@@ -260,7 +250,6 @@ public struct ObservationOptions: OptionSet, Sendable {
             resultingRateLimit = rateLimitConfiguration == other.rateLimitConfiguration ? nil : rateLimitConfiguration
         }
         return ObservationOptions(
-            removeDuplicates: removeDuplicates,
             usesLegacyBackend: usesLegacyBackend,
             rateLimitConfiguration: resultingRateLimit,
             hasConflictingRateLimit: resultingConflict
@@ -295,12 +284,11 @@ public struct ObservationOptions: OptionSet, Sendable {
     }
 
     private static func encodeRawValue(
-        removeDuplicates: Bool,
         usesLegacyBackend: Bool,
         rateLimitConfiguration: ObservationRateLimit?,
         hasConflictingRateLimit: Bool
     ) -> UInt64 {
-        var rawValue: UInt64 = removeDuplicates ? removeDuplicatesFlag : 0
+        var rawValue: UInt64 = 0
         if usesLegacyBackend {
             rawValue |= legacyBackendFlag
         }
@@ -498,14 +486,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         return observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -522,56 +505,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         return observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            onChange: { _ in
-                await onChange()
-            }
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            onChange: makeOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -590,14 +526,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         return observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -614,56 +545,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         return observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            task: { _ in
-                await task()
-            }
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeTaskImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeTaskImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -682,14 +566,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates is not supported for multiple key path trigger observation")
-        }
-
         return observeImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -708,14 +587,9 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates is not supported for multiple key path trigger observation")
-        }
-
         return observeTaskImpl(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -723,98 +597,6 @@ public extension Observable where Self: AnyObject {
             task: { _ in
                 await task()
             }
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
-        return observeImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
-            onChange: makeOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
-            onChange: makeOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
-        return observeTaskImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        observeTaskImpl(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
-            task: task
         )
     }
 }
@@ -828,10 +610,6 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         let getter = makeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
@@ -843,7 +621,6 @@ public extension Observable where Self: AnyObject {
         return observeImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -860,10 +637,6 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         let getter = makeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
@@ -875,63 +648,6 @@ public extension Observable where Self: AnyObject {
         return observeImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            onChange: makeNonSendableVoidOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
-        let producerIsolation = getter.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:onChange:isolation:)"
-        )
-
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            onChange: makeNonSendableOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
-        let producerIsolation = getter.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:onChange:isolation:)"
-        )
-
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -948,10 +664,6 @@ public extension Observable where Self: AnyObject {
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
         isolation: isolated (any Actor)? = #isolation
     ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         let getter = makeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
@@ -963,7 +675,6 @@ public extension Observable where Self: AnyObject {
         return observeTaskImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
@@ -974,66 +685,6 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observeTask<Value>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
-        let getter = makeKeyPathGetter(keyPath)
-        let producerIsolation = getter.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:task:isolation:)"
-        )
-
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            task: makeNonSendableVoidTaskAdapter(task)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
-        let producerIsolation = getter.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:task:isolation:)"
-        )
-
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            task: makeNonSendableTaskAdapter(task)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -1051,136 +702,11 @@ public extension Observable where Self: AnyObject {
         return observeTaskImplNonSendable(
             owner: self,
             options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
             of: getter,
             task: makeNonSendableVoidTaskAdapter(task)
-        )
-    }
-
-    @discardableResult
-    func observe<Value>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
-        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
-        let producerIsolation = projection.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:of:onChange:isolation:)"
-        )
-
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: projection,
-            onChange: makeNonSendableOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
-        let producerIsolation = projection.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:of:onChange:isolation:)"
-        )
-
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: projection,
-            onChange: makeNonSendableOnChangeAdapter(onChange)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
-        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
-        let producerIsolation = projection.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:of:task:isolation:)"
-        )
-
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: projection,
-            task: makeNonSendableTaskAdapter(task)
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
-        let producerIsolation = projection.isolation ?? isolation
-        preconditionNonSendableSameIsolation(
-            producerIsolation: producerIsolation,
-            consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:of:task:isolation:)"
-        )
-
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: projection,
-            task: makeNonSendableTaskAdapter(task)
         )
     }
 }
@@ -1239,38 +765,12 @@ private func makeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
     }
 }
 
-private func makeAnyKeyPathsValueGetter<Owner: AnyObject, Value>(
-    _ keyPaths: sending [PartialKeyPath<Owner>],
-    of value: @escaping @Sendable (Owner) -> Value
-) -> @isolated(any) @Sendable (Owner) -> Value {
-    let keyPaths = _UncheckedSendablePartialKeyPaths(keyPaths: keyPaths)
-    return { owner in
-        for keyPath in keyPaths.keyPaths {
-            _ = owner[keyPath: keyPath]
-        }
-        return value(owner)
-    }
-}
-
 private func makeOnChangeAdapter<Value>(
     _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
 ) -> @isolated(any) @Sendable (sending Value) async -> Void {
     { value in
         await onChange(value)
     }
-}
-
-private func makeEquatableDuplicateFilterSendable<Value: Sendable & Equatable>() -> @Sendable (Value, Value) -> Bool {
-    { lhs, rhs in
-        lhs == rhs
-    }
-}
-
-private func makeEquatableDuplicateFilterNonSendable<Value: Equatable>() -> @Sendable (Value, Value) -> Bool {
-    let comparator: (Value, Value) -> Bool = { lhs, rhs in
-        lhs == rhs
-    }
-    return unsafe unsafeBitCast(comparator, to: (@Sendable (Value, Value) -> Bool).self)
 }
 
 private func makeNonSendableOnChangeAdapter<Value>(
@@ -1326,7 +826,6 @@ private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable
     let options: ObservationOptions
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
-    let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
     let rateLimit: ObservationRateLimit?
     let rateLimitClock: any Clock<Duration>
 
@@ -1335,7 +834,6 @@ private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable
             options: options,
             observe,
             capturedIsolation: capturedIsolation,
-            duplicateFilter: duplicateFilter,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
@@ -1346,7 +844,6 @@ private struct ObservationBridgeStreamBuilder<Value>: Sendable {
     let options: ObservationOptions
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
-    let duplicateFilter: (@Sendable (Value, Value) -> Bool)?
     let rateLimit: ObservationRateLimit?
     let rateLimitClock: any Clock<Duration>
 
@@ -1355,7 +852,6 @@ private struct ObservationBridgeStreamBuilder<Value>: Sendable {
             options: options,
             observe,
             capturedIsolation: capturedIsolation,
-            duplicateFilter: duplicateFilter,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
@@ -1366,7 +862,6 @@ func makeObservationStream<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     rateLimit: ObservationRateLimit? = nil,
     rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
@@ -1375,28 +870,20 @@ func makeObservationStream<Value: Sendable>(
         observe,
         isolation: observe.isolation ?? isolation
     )
-    let streamWithRateLimit: AsyncStream<Value>
     if let rateLimit {
-        streamWithRateLimit = makeRateLimitedValueStream(
+        return makeRateLimitedValueStream(
             stream,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
-    } else {
-        streamWithRateLimit = stream
     }
-
-    return makeDuplicateFilteredStream(
-        streamWithRateLimit,
-        isDuplicate: duplicateFilter
-    )
+    return stream
 }
 
 private func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     rateLimit: ObservationRateLimit? = nil,
     rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
@@ -1405,28 +892,20 @@ private func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
         observe,
         isolation: observe.isolation ?? capturedIsolation
     )
-    let streamWithRateLimit: AsyncStream<Value>
     if let rateLimit {
-        streamWithRateLimit = makeRateLimitedValueStream(
+        return makeRateLimitedValueStream(
             stream,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
-    } else {
-        streamWithRateLimit = stream
     }
-
-    return makeDuplicateFilteredStream(
-        streamWithRateLimit,
-        isDuplicate: duplicateFilter
-    )
+    return stream
 }
 
 func makeObservationStream<Value>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     rateLimit: ObservationRateLimit? = nil,
     rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
@@ -1440,39 +919,25 @@ func makeObservationStream<Value>(
             )
         )
     }
-    let boxedDuplicateFilter: (@Sendable (_UncheckedSendableValueBox<Value>, _UncheckedSendableValueBox<Value>) -> Bool)?
-    if let duplicateFilter {
-        boxedDuplicateFilter = { lhs, rhs in
-            duplicateFilter(lhs.value, rhs.value)
-        }
-    } else {
-        boxedDuplicateFilter = nil
-    }
 
     let boxedStream = makeLegacyObservationStream(
         boxedObserve,
-        isDuplicate: nil,
         isolation: observe.isolation ?? isolation
     )
-    let boxedStreamWithRateLimit: AsyncStream<_UncheckedSendableValueBox<Value>>
+    let sourceStream: AsyncStream<_UncheckedSendableValueBox<Value>>
     if let rateLimit {
-        boxedStreamWithRateLimit = makeRateLimitedValueStream(
+        sourceStream = makeRateLimitedValueStream(
             boxedStream,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
     } else {
-        boxedStreamWithRateLimit = boxedStream
+        sourceStream = boxedStream
     }
-
-    let boxedFilteredStream = makeDuplicateFilteredStream(
-        boxedStreamWithRateLimit,
-        isDuplicate: boxedDuplicateFilter
-    )
 
     let stream = AsyncStream<Value> { continuation in
         let task = Task {
-            for await boxedValue in boxedFilteredStream {
+            for await boxedValue in sourceStream {
                 if Task.isCancelled {
                     break
                 }
@@ -1492,7 +957,6 @@ private func makeObservationStreamFromCapturedIsolation<Value>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     rateLimit: ObservationRateLimit? = nil,
     rateLimitClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
@@ -1516,39 +980,25 @@ private func makeObservationStreamFromCapturedIsolation<Value>(
             )
         )
     }
-    let boxedDuplicateFilter: (@Sendable (_UncheckedSendableValueBox<Value>, _UncheckedSendableValueBox<Value>) -> Bool)?
-    if let duplicateFilter {
-        boxedDuplicateFilter = { lhs, rhs in
-            duplicateFilter(lhs.value, rhs.value)
-        }
-    } else {
-        boxedDuplicateFilter = nil
-    }
 
     let boxedStream = makeLegacyObservationStream(
         boxedObserve,
-        isDuplicate: nil,
         isolation: observe.isolation ?? capturedIsolation
     )
-    let boxedStreamWithRateLimit: AsyncStream<_UncheckedSendableValueBox<Value>>
+    let sourceStream: AsyncStream<_UncheckedSendableValueBox<Value>>
     if let rateLimit {
-        boxedStreamWithRateLimit = makeRateLimitedValueStream(
+        sourceStream = makeRateLimitedValueStream(
             boxedStream,
             rateLimit: rateLimit,
             rateLimitClock: rateLimitClock
         )
     } else {
-        boxedStreamWithRateLimit = boxedStream
+        sourceStream = boxedStream
     }
-
-    let boxedFilteredStream = makeDuplicateFilteredStream(
-        boxedStreamWithRateLimit,
-        isDuplicate: boxedDuplicateFilter
-    )
 
     let stream = AsyncStream<Value> { continuation in
         let task = Task {
-            for await boxedValue in boxedFilteredStream {
+            for await boxedValue in sourceStream {
                 if Task.isCancelled {
                     break
                 }
@@ -1573,7 +1023,6 @@ private func makeRawObservationStream<Value: Sendable>(
     case .legacy:
         return makeLegacyObservationStream(
             observe,
-            isDuplicate: nil,
             isolation: isolation
         )
     case .native:
@@ -1585,47 +1034,8 @@ private func makeRawObservationStream<Value: Sendable>(
         }
         return makeLegacyObservationStream(
             observe,
-            isDuplicate: nil,
             isolation: isolation
         )
-    }
-}
-
-private enum _ObservationStreamPrevious<Value> {
-    case none
-    case value(Value)
-}
-
-private func makeDuplicateFilteredStream<Value: Sendable>(
-    _ source: AsyncStream<Value>,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)?
-) -> AsyncStream<Value> {
-    AsyncStream<Value> { continuation in
-        let task = Task {
-            var previousValue: _ObservationStreamPrevious<Value> = .none
-
-            for await value in source {
-                if Task.isCancelled {
-                    break
-                }
-
-                if case let .value(previous) = previousValue,
-                   let isDuplicate,
-                   isDuplicate(previous, value)
-                {
-                    continue
-                }
-
-                previousValue = .value(value)
-                continuation.yield(value)
-            }
-
-            continuation.finish()
-        }
-
-        continuation.onTermination = { _ in
-            task.cancel()
-        }
     }
 }
 
@@ -1707,15 +1117,10 @@ public struct ObservationBridge<Value>: AsyncSequence {
     ) {
         let constructionIsolation: (any Actor)? = #isolation
 
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         let builder = ObservationBridgeStreamBuilder(
             options: options,
             observe: observe,
             capturedIsolation: constructionIsolation,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock
         )
@@ -1724,6 +1129,15 @@ public struct ObservationBridge<Value>: AsyncSequence {
 
     public func makeAsyncIterator() -> Iterator {
         Iterator(base: streamFactory.makeStream().makeAsyncIterator())
+    }
+
+    public init(
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self.init(
+            options: [],
+            observe
+        )
     }
 }
 
@@ -1737,87 +1151,33 @@ public extension ObservationBridge where Value: Sendable {
     ) {
         let constructionIsolation: (any Actor)? = #isolation
 
-        if options.contains(.removeDuplicates) {
-            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
-        }
-
         let builder = SendableObservationBridgeStreamBuilder(
             options: options,
             observe: observe,
             capturedIsolation: constructionIsolation,
-            duplicateFilter: nil,
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
     }
-}
 
-public extension ObservationBridge where Value: Equatable {
     init(
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            options: [.removeDuplicates],
+            options: [],
             observe
         )
     }
-
-    init(
-        options: ObservationOptions,
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-    ) {
-        let constructionIsolation: (any Actor)? = #isolation
-
-        let builder = ObservationBridgeStreamBuilder(
-            options: options,
-            observe: observe,
-            capturedIsolation: constructionIsolation,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock
-        )
-        self.init(streamFactory: builder.makeStream)
-    }
 }
 
-public extension ObservationBridge where Value: Sendable & Equatable {
-    init(
-        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-    ) {
-        self.init(
-            options: [.removeDuplicates],
-            observe
-        )
-    }
-
-    init(
-        options: ObservationOptions,
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-    ) {
-        let constructionIsolation: (any Actor)? = #isolation
-
-        let builder = SendableObservationBridgeStreamBuilder(
-            options: options,
-            observe: observe,
-            capturedIsolation: constructionIsolation,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock
-        )
-        self.init(streamFactory: builder.makeStream)
-    }
-}
-
-public func makeObservationBridgeStream<Value: Equatable>(
+public func makeObservationBridgeStream<Value>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationBridge<Value> {
     ObservationBridge(observe)
 }
 
-public func makeObservationBridgeStream<Value: Sendable & Equatable>(
+public func makeObservationBridgeStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationBridge<Value> {
     ObservationBridge(observe)
@@ -1836,30 +1196,6 @@ public func makeObservationBridgeStream<Value>(
 }
 
 public func makeObservationBridgeStream<Value: Sendable>(
-    options: ObservationOptions,
-    clock: any Clock<Duration> = ContinuousClock(),
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationBridge<Value> {
-    ObservationBridge(
-        options: options,
-        clock: clock,
-        observe
-    )
-}
-
-public func makeObservationBridgeStream<Value: Equatable>(
-    options: ObservationOptions,
-    clock: any Clock<Duration> = ContinuousClock(),
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationBridge<Value> {
-    ObservationBridge(
-        options: options,
-        clock: clock,
-        observe
-    )
-}
-
-public func makeObservationBridgeStream<Value: Sendable & Equatable>(
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value

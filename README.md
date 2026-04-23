@@ -52,19 +52,7 @@ let stateChangeHandle = model.observeTask([\.count, \.isEnabled]) {
 }
 ```
 
-### Multiple key paths with value projection
-
-```swift
-let stateProjectionHandle = model.observeTask(
-    [\.count, \.isEnabled],
-    options: [.removeDuplicates],
-    of: { owner in
-        (owner.count, owner.isEnabled)
-    }
-) { state in
-    await analytics.trackState(state)
-}
-```
+If you need derived state from multiple key paths, use trigger-only observation and read the owner inside the callback or task.
 
 ## Configuration
 
@@ -72,7 +60,6 @@ let stateProjectionHandle = model.observeTask(
 
 Available options:
 
-- `.removeDuplicates`: suppresses consecutive equal values.
 - `.rateLimit(ObservationRateLimit)`: explicit rate-limit configuration (`.debounce(...)` / `.throttle(...)`).
 - `.legacyBackend` (`iOS 26.0+` / `macOS 26.0+`): forces legacy `withObservationTracking` backend even on modern OS.
 - `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
@@ -83,7 +70,7 @@ Rate-limit notes:
 - `debounce` and `throttle` are mutually exclusive; combining different rate-limit options is a configuration conflict.
 - `throttle(mode: .latest)` is the default and means: emit the first value immediately, then emit the latest value seen during each interval.
 - `throttle(mode: .earliest)` emits the first value seen during each interval after the initial immediate emission.
-- When `.removeDuplicates` is combined with a rate limit, duplicate suppression is applied to rate-limited outputs.
+- If you need duplicate suppression, implement it explicitly at the call site.
 
 ### Clock
 
@@ -167,11 +154,42 @@ Backend behavior note:
 - `observeTask` never cancels in-flight work; it preserves the next selected output, then coalesces any additional backlog to the latest pending value
 - non-`Sendable` values always use the legacy backend, even on `iOS/macOS 26.0+`
 - non-`Sendable` observation preconditions producer/callback isolation equality; mismatch traps at runtime
-- with `.removeDuplicates`, coalescing still avoids re-emitting a value that duplicates the currently delivered one
 - keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
 - `cancel()` does not remove handles from your `Set`; remove them explicitly if desired
 
 ## Migration
+
+### v0.7.0
+
+- `.removeDuplicates` has been removed from `ObservationOptions`.
+- multi-keypath projection overloads that accepted `of:` have been removed.
+- multi-keypath observation is intentionally trigger-only now. Producer-side snapshot projection, including cross-actor derived value delivery, is no longer supported.
+- If you need duplicate suppression, implement it at the call site.
+
+Before:
+
+```swift
+let stateStream = ObservationBridge {
+    model.count
+}
+
+let handle = model.observeTask(
+    [\.count, \.isEnabled],
+    of: { owner in (owner.count, owner.isEnabled) }
+) { state in
+    await analytics.trackState(state)
+}
+```
+
+After:
+
+```swift
+let handle = model.observeTask([\.count, \.isEnabled]) {
+    await analytics.trackState((model.count, model.isEnabled))
+}
+```
+
+This is an intentional API reduction. Multi-keypath observers now only tell you that one of the tracked key paths changed; they do not preserve or deliver a producer-side snapshot anymore.
 
 ### v0.6.0
 
