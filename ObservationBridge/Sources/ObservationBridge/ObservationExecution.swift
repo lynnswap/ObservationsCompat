@@ -147,56 +147,6 @@ enum ThrottleAction<Value>: Sendable where Value: Sendable {
     case idle
 }
 
-private struct DuplicateEmissionState<Value: Sendable>: Sendable {
-    private enum Previous: Sendable {
-        case none
-        case value(Value)
-    }
-
-    private var previous: Previous = .none
-    let isDuplicate: (@Sendable (Value, Value) -> Bool)?
-
-    init(isDuplicate: (@Sendable (Value, Value) -> Bool)?) {
-        self.isDuplicate = isDuplicate
-    }
-
-    mutating func shouldEmit(_ value: Value) -> Bool {
-        if case let .value(previousValue) = previous,
-           let isDuplicate,
-           isDuplicate(previousValue, value)
-        {
-            return false
-        }
-        previous = .value(value)
-        return true
-    }
-}
-
-private struct DuplicateEmissionStateNonSendable<Value> {
-    private enum Previous {
-        case none
-        case value(Value)
-    }
-
-    private var previous: Previous = .none
-    let isDuplicate: (@Sendable (Value, Value) -> Bool)?
-
-    init(isDuplicate: (@Sendable (Value, Value) -> Bool)?) {
-        self.isDuplicate = isDuplicate
-    }
-
-    mutating func shouldEmit(_ value: Value) -> Bool {
-        if case let .value(previousValue) = previous,
-           let isDuplicate,
-           isDuplicate(previousValue, value)
-        {
-            return false
-        }
-        previous = .value(value)
-        return true
-    }
-}
-
 final class _UncheckedSendableValueBox<Value>: @unchecked Sendable {
     let value: Value
 
@@ -208,7 +158,6 @@ final class _UncheckedSendableValueBox<Value>: @unchecked Sendable {
 func observeImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
     options: ObservationOptions,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
@@ -235,8 +184,6 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
             lifetime.cancel()
         }
 
-        var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
-
         if let rateLimit {
             let rateLimitedValues = makeRateLimitedValueStream(
                 observedValues.channel,
@@ -247,18 +194,12 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
                 guard !Task.isCancelled else {
                     break
                 }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
-                }
                 await onChange(observedValue)
             }
         } else {
             for await observedValue in observedValues.channel {
                 guard !Task.isCancelled else {
                     break
-                }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
                 }
                 await onChange(observedValue)
             }
@@ -277,7 +218,6 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
 func observeImplNonSendable<Owner: AnyObject, Value>(
     owner: Owner,
     options: ObservationOptions,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
@@ -302,8 +242,6 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
             of: value
         )
 
-        var duplicateState = DuplicateEmissionStateNonSendable(isDuplicate: duplicateFilter)
-
         if let rateLimit {
             let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
                 observedValues,
@@ -314,18 +252,12 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
                 guard !Task.isCancelled else {
                     break
                 }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
-                }
                 await onChange(_UncheckedSendableValueBox(observedValue))
             }
         } else {
             for await observedValue in observedValues {
                 guard !Task.isCancelled else {
                     break
-                }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
                 }
                 await onChange(_UncheckedSendableValueBox(observedValue))
             }
@@ -344,7 +276,6 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
 func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
     options: ObservationOptions,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
@@ -411,33 +342,12 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 return (accepted: false, shouldWake: false)
             }
 
-            if let duplicateFilter,
-               let previousDeliveredValue = state.activeOperationValue ?? state.lastDeliveredValue,
-               state.pendingNextValue == nil
-            {
-                if duplicateFilter(previousDeliveredValue, observedValue) {
-                    return (accepted: true, shouldWake: false)
-                }
-            } else if let duplicateFilter,
-                      let pendingCoalescedValue = state.pendingCoalescedValue,
-                      duplicateFilter(pendingCoalescedValue, observedValue)
-            {
-                return (accepted: true, shouldWake: false)
-            }
-
             if state.pendingNextValue == nil {
                 state.pendingNextValue = observedValue
                 return (accepted: true, shouldWake: state.activeOperationTask == nil)
             }
 
             if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
-                if let duplicateFilter,
-                   let pendingNextValue = state.pendingNextValue,
-                   duplicateFilter(pendingNextValue, observedValue)
-                {
-                    return (accepted: true, shouldWake: false)
-                }
-
                 state.pendingFollowingValue = observedValue
                 return (accepted: true, shouldWake: false)
             }
@@ -475,14 +385,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                         state.pendingNextValue = pendingFollowingValue
                         state.pendingFollowingValue = nil
                     } else {
-                        if let duplicateFilter,
-                           let pendingCoalescedValue = state.pendingCoalescedValue,
-                           duplicateFilter(nextValue, pendingCoalescedValue)
-                        {
-                            state.pendingNextValue = nil
-                        } else {
-                            state.pendingNextValue = state.pendingCoalescedValue
-                        }
+                        state.pendingNextValue = state.pendingCoalescedValue
                         state.pendingCoalescedValue = nil
                     }
                     let operationID = state.nextOperationID
@@ -532,8 +435,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             lifetime.cancel()
         }
 
-        var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
-
         if let rateLimit {
             let rateLimitedValues = makeRateLimitedValueStream(
                 observedValues.channel,
@@ -544,9 +445,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 guard !Task.isCancelled else {
                     break
                 }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
-                }
                 guard enqueueLatestValue(observedValue) else {
                     break
                 }
@@ -555,9 +453,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             for await observedValue in observedValues.channel {
                 guard !Task.isCancelled else {
                     break
-                }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
                 }
                 guard enqueueLatestValue(observedValue) else {
                     break
@@ -578,7 +473,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 func observeTaskImplNonSendable<Owner: AnyObject, Value>(
     owner: Owner,
     options: ObservationOptions,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
@@ -647,34 +541,12 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                 return (accepted: false, shouldWake: false)
             }
 
-            if let duplicateFilter,
-               state.pendingNextValue == nil
-            {
-                if let previousDeliveredValue = state.activeOperationValue ?? state.lastDeliveredValue,
-                   duplicateFilter(previousDeliveredValue.value, observedValue.value)
-                {
-                    return (accepted: true, shouldWake: false)
-                }
-            } else if let duplicateFilter,
-                      let pendingCoalescedValue = state.pendingCoalescedValue,
-                      duplicateFilter(pendingCoalescedValue.value, observedValue.value)
-            {
-                return (accepted: true, shouldWake: false)
-            }
-
             if state.pendingNextValue == nil {
                 state.pendingNextValue = observedValue
                 return (accepted: true, shouldWake: state.activeOperationTask == nil)
             }
 
             if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
-                if let duplicateFilter,
-                   let pendingNextValue = state.pendingNextValue,
-                   duplicateFilter(pendingNextValue.value, observedValue.value)
-                {
-                    return (accepted: true, shouldWake: false)
-                }
-
                 state.pendingFollowingValue = observedValue
                 return (accepted: true, shouldWake: false)
             }
@@ -712,14 +584,7 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                         state.pendingNextValue = pendingFollowingValue
                         state.pendingFollowingValue = nil
                     } else {
-                        if let duplicateFilter,
-                           let pendingCoalescedValue = state.pendingCoalescedValue,
-                           duplicateFilter(nextValue.value, pendingCoalescedValue.value)
-                        {
-                            state.pendingNextValue = nil
-                        } else {
-                            state.pendingNextValue = state.pendingCoalescedValue
-                        }
+                        state.pendingNextValue = state.pendingCoalescedValue
                         state.pendingCoalescedValue = nil
                     }
                     let operationID = state.nextOperationID
@@ -765,8 +630,6 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
             of: value
         )
 
-        var duplicateState = DuplicateEmissionStateNonSendable(isDuplicate: duplicateFilter)
-
         if let rateLimit {
             let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
                 observedValues,
@@ -777,9 +640,6 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                 guard !Task.isCancelled else {
                     break
                 }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
-                }
                 guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
                     break
                 }
@@ -788,9 +648,6 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
             for await observedValue in observedValues {
                 guard !Task.isCancelled else {
                     break
-                }
-                guard duplicateState.shouldEmit(observedValue) else {
-                    continue
                 }
                 guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
                     break
@@ -865,7 +722,6 @@ private func makeObservedValueStreamNonSendable<Owner: AnyObject, Value>(
 
     let stream = makeLegacyObservationStream(
         observeOwnerValue,
-        isDuplicate: nil,
         isolation: resolvedIsolation
     )
     return AsyncStream { continuation in
@@ -1295,7 +1151,6 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     case .legacy:
         await forEachLegacyObservationEmission(
             observeOwnerValue,
-            isDuplicate: nil,
             isolation: resolvedIsolation
         ) { emission in
             guard !Task.isCancelled else {

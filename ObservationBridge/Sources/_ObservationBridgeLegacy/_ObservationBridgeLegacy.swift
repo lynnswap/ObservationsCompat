@@ -3,7 +3,6 @@ import Synchronization
 
 package func makeLegacyObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
     isolation: (any Actor)? = #isolation
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
@@ -15,7 +14,6 @@ package func makeLegacyObservationStream<Value: Sendable>(
                     observe: observe,
                     observeIsolation: observeIsolation,
                     observationState: observationState,
-                    isDuplicate: isDuplicate,
                     emit: { value in
                         continuation.yield(value)
                         return true
@@ -36,7 +34,6 @@ package func makeLegacyObservationStream<Value: Sendable>(
 
 package func forEachLegacyObservationEmission<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
     isolation: (any Actor)? = #isolation,
     consume: @escaping @Sendable (Value) async -> Bool
 ) async {
@@ -48,7 +45,6 @@ package func forEachLegacyObservationEmission<Value: Sendable>(
             observe: observe,
             observeIsolation: observeIsolation,
             observationState: observationState,
-            isDuplicate: isDuplicate,
             emit: consume
         )
     }, onCancel: {
@@ -60,30 +56,15 @@ private func runLegacyObservationLoop<Value: Sendable>(
     observe: @escaping @isolated(any) @Sendable () -> Value,
     observeIsolation: (any Actor)?,
     observationState: LegacyObservationState,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)?,
     emit: @escaping @Sendable (Value) async -> Bool
 ) async {
-    var latestValue: LatestObservedValue<Value> = .unset
-
-    func emitIfNeeded(_ value: Value) async -> Bool {
-        if case .set(let previousValue) = latestValue,
-           let isDuplicate,
-           isDuplicate(previousValue, value)
-        {
-            return true
-        }
-
-        latestValue = .set(value)
-        return await emit(value)
-    }
-
     func registerTracking() async -> Bool {
         let value = await trackLegacyValue(
             isolation: observeIsolation,
             observe: observe,
             observationState: observationState
         )
-        return await emitIfNeeded(value)
+        return await emit(value)
     }
 
     guard !Task.isCancelled else {
@@ -106,11 +87,6 @@ private func runLegacyObservationLoop<Value: Sendable>(
     }
 
     observationState.terminate()
-}
-
-private enum LatestObservedValue<Value> {
-    case unset
-    case set(Value)
 }
 
 private func trackLegacyValue<Value: Sendable>(
