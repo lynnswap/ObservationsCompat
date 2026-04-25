@@ -1265,7 +1265,7 @@ private func forEachThrottledOwnerValueNonSendable<Owner: AnyObject, Value>(
     }
 }
 
-private func forEachThrottledValue<Value: Sendable>(
+func forEachThrottledValue<Value: Sendable>(
     throttle: ObservationThrottle,
     throttleClock: any Clock<Duration>,
     emitReadyValuesInline: Bool,
@@ -1281,7 +1281,7 @@ private func forEachThrottledValue<Value: Sendable>(
     )
 }
 
-private func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
+func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
     throttle: ObservationThrottle,
     clock: C,
     emitReadyValuesInline: Bool,
@@ -1416,6 +1416,14 @@ private func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
             await Task.yield()
         }
     }
+    let isWaitingForThrottleTimerAfterSourceFinish: @Sendable () -> Bool = {
+        stateBox.state.withLock { state in
+            state.isSourceFinished
+                && state.readyValue == nil
+                && state.pendingValue != nil
+                && state.activeTimerToken != nil
+        }
+    }
 
     let timerDrainTask = makeObservationTask {
         for await _ in wakeStream {
@@ -1446,13 +1454,19 @@ private func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
         stateBox.state.withLock { state in
             state.finishSource()
         }
-        let didFinish = !(await drainThrottleActions())
-        if !didFinish {
+        while true {
+            let shouldContinue = await drainThrottleActions()
+            await waitForThrottleDrainToFinish()
+            guard shouldContinue else {
+                break
+            }
+            guard isWaitingForThrottleTimerAfterSourceFinish() else {
+                continue
+            }
             for await _ in drainFinishedStream {
                 break
             }
         }
-        await waitForThrottleDrainToFinish()
         drainFinishedSignal.finish()
         outputContinuation.finish()
         await consumerTask.value

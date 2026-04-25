@@ -1717,6 +1717,50 @@ final class ObservationBridgeTests {
     }
 
     @Test
+    func forEachThrottledValueFinishesWhenSourceEndsDuringTimerDrain() async {
+        let clock = TestDebounceClock()
+        let started = ValueQueue<Int>()
+        let sourceCanFinish = ValueQueue<Int>()
+        let releaseSecondValue = ValueQueue<Int>()
+        let finished = ValueQueue<Int>()
+        let throttle = ObservationThrottle(interval: .milliseconds(200))
+
+        let task = Task<Void, Never> {
+            await forEachThrottledValue(
+                throttle: throttle,
+                clock: clock,
+                emitReadyValuesInline: true
+            ) { consumeValue in
+                guard await consumeValue(0) else {
+                    return
+                }
+                guard await consumeValue(1) else {
+                    return
+                }
+                _ = await nextWithTimeout(from: sourceCanFinish)
+            } consume: { value in
+                await started.push(value)
+                if value == 1 {
+                    await sourceCanFinish.push(value)
+                    _ = await releaseSecondValue.next()
+                }
+                return true
+            }
+            await finished.push(1)
+        }
+        defer { task.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: started) == 1)
+        #expect(await nextWithTimeout(from: finished, nanoseconds: 120_000_000) == nil)
+
+        await releaseSecondValue.push(1)
+        #expect(await nextWithTimeout(from: finished) == 1)
+    }
+
+    @Test
     func throttleExecutionStatePreservesBoundaryEmissionOrderAcrossTimerExpiryRace() {
         var state = ThrottleExecutionState<Int>()
         state.recordIncomingValue(0, keepLatestPending: true)
