@@ -492,6 +492,7 @@ public extension Observable where Self: AnyObject {
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
+            callbackIsolation: onChange.isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -511,6 +512,7 @@ public extension Observable where Self: AnyObject {
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
+            callbackIsolation: onChange.isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: { _ in
                 await onChange()
@@ -572,6 +574,7 @@ public extension Observable where Self: AnyObject {
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
+            callbackIsolation: onChange.isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
                 await onChange()
@@ -624,6 +627,7 @@ public extension Observable where Self: AnyObject {
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
+            callbackIsolation: onChange.isolation,
             of: getter,
             onChange: makeNonSendableOnChangeAdapter(onChange)
         )
@@ -651,6 +655,7 @@ public extension Observable where Self: AnyObject {
             rateLimit: options.rateLimitForObservation,
             rateLimitClock: clock,
             isolation: isolation,
+            callbackIsolation: onChange.isolation,
             of: getter,
             onChange: makeNonSendableVoidOnChangeAdapter(onChange)
         )

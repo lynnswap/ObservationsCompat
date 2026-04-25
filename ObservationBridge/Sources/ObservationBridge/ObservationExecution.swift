@@ -20,6 +20,20 @@ private struct PendingObserveTaskOperation<Value: Sendable>: Sendable {
     let value: Value
 }
 
+private struct ImmediateFirstDebounceExecutionState: Sendable {
+    var didEmitFirst = false
+    var shouldStop = false
+}
+
+private struct RateLimitedConsumerState: Sendable {
+    var shouldStop = false
+}
+
+private struct RateLimitedDrainState: Sendable {
+    var isDraining = false
+    var needsDrain = false
+}
+
 private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var activeOperationTask: Task<Void, Never>? = nil
     var activeOperationID: UInt64? = nil
@@ -160,6 +174,23 @@ private final class ThrottleStateBox<Value: Sendable>: @unchecked Sendable {
     }
 }
 
+private final class ObservationTaskBox: Sendable {
+    private let task = Mutex<Task<Void, Never>?>(nil)
+
+    func replace(with newTask: Task<Void, Never>?) {
+        let oldTask = task.withLock { task in
+            let oldTask = task
+            task = newTask
+            return oldTask
+        }
+        oldTask?.cancel()
+    }
+
+    func cancel() {
+        replace(with: nil)
+    }
+}
+
 enum ThrottleAction<Value>: Sendable where Value: Sendable {
     case emit(value: Value, timerToken: UInt64?, finishAfterEmit: Bool)
     case finish
@@ -180,6 +211,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
+    callbackIsolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -194,26 +226,61 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         }
 
         if let rateLimit {
-            let observedValues = makeObservedValueChannel(
-                ownerToken: ownerToken,
-                options: options,
-                isolation: isolation,
-                of: value
-            )
-            lifetime.addCancellationHandler {
-                observedValues.producerTask.cancel()
-                observedValues.channel.finish()
-            }
-            let rateLimitedValues = makeRateLimitedValueStream(
-                observedValues.channel,
-                rateLimit: rateLimit,
-                rateLimitClock: rateLimitClock
-            )
-            for await observedValue in rateLimitedValues {
-                guard !Task.isCancelled else {
-                    break
+            switch rateLimit {
+            case let .debounce(debounce) where debounce.mode == .delayedFirst:
+                let observedValues = makeObservedValueChannel(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value
+                )
+                lifetime.addCancellationHandler {
+                    observedValues.producerTask.cancel()
+                    observedValues.channel.finish()
                 }
-                await onChange(observedValue)
+                let rateLimitedValues = makeRateLimitedValueStream(
+                    observedValues.channel,
+                    rateLimit: rateLimit,
+                    rateLimitClock: rateLimitClock
+                )
+                for await observedValue in rateLimitedValues {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    await onChange(observedValue)
+                }
+            case let .debounce(debounce):
+                await forEachImmediateFirstDebouncedOwnerValue(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value,
+                    debounce: debounce,
+                    debounceClock: rateLimitClock,
+                    emitFirstInline: callbackIsolation == nil
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
+                }
+            case let .throttle(throttle):
+                await forEachThrottledOwnerValue(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value,
+                    throttle: throttle,
+                    throttleClock: rateLimitClock,
+                    emitReadyValuesInline: callbackIsolation == nil
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
+                }
             }
         } else {
             await forEachOwnerValueEmission(
@@ -251,6 +318,7 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
     rateLimit: ObservationRateLimit?,
     rateLimitClock: any Clock<Duration>,
     isolation: (any Actor)?,
+    callbackIsolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
 ) -> ObservationHandle {
@@ -267,21 +335,54 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
         }
 
         if let rateLimit {
-            let observedValues = makeObservedValueStreamNonSendable(
-                ownerToken: ownerToken,
-                isolation: isolation,
-                of: value
-            )
-            let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
-                observedValues,
-                rateLimit: rateLimit,
-                rateLimitClock: rateLimitClock
-            )
-            for await observedValue in rateLimitedValues {
-                guard !Task.isCancelled else {
-                    break
+            switch rateLimit {
+            case let .debounce(debounce) where debounce.mode == .delayedFirst:
+                let observedValues = makeObservedValueStreamNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value
+                )
+                let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
+                    observedValues,
+                    rateLimit: rateLimit,
+                    rateLimitClock: rateLimitClock
+                )
+                for await observedValue in rateLimitedValues {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    await onChange(_UncheckedSendableValueBox(observedValue))
                 }
-                await onChange(_UncheckedSendableValueBox(observedValue))
+            case let .debounce(debounce):
+                await forEachImmediateFirstDebouncedOwnerValueNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value,
+                    debounce: debounce,
+                    debounceClock: rateLimitClock,
+                    emitFirstInline: callbackIsolation == nil
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
+                }
+            case let .throttle(throttle):
+                await forEachThrottledOwnerValueNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value,
+                    throttle: throttle,
+                    throttleClock: rateLimitClock,
+                    emitReadyValuesInline: callbackIsolation == nil
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
+                }
             }
         } else {
             await forEachOwnerValueEmissionNonSendable(
@@ -475,27 +576,60 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         }
 
         if let rateLimit {
-            let observedValues = makeObservedValueChannel(
-                ownerToken: ownerToken,
-                options: options,
-                isolation: isolation,
-                of: value
-            )
-            lifetime.addCancellationHandler {
-                observedValues.producerTask.cancel()
-                observedValues.channel.finish()
-            }
-            let rateLimitedValues = makeRateLimitedValueStream(
-                observedValues.channel,
-                rateLimit: rateLimit,
-                rateLimitClock: rateLimitClock
-            )
-            for await observedValue in rateLimitedValues {
-                guard !Task.isCancelled else {
-                    break
+            switch rateLimit {
+            case let .debounce(debounce) where debounce.mode == .delayedFirst:
+                let observedValues = makeObservedValueChannel(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value
+                )
+                lifetime.addCancellationHandler {
+                    observedValues.producerTask.cancel()
+                    observedValues.channel.finish()
                 }
-                guard enqueueLatestValue(observedValue) else {
-                    break
+                let rateLimitedValues = makeRateLimitedValueStream(
+                    observedValues.channel,
+                    rateLimit: rateLimit,
+                    rateLimitClock: rateLimitClock
+                )
+                for await observedValue in rateLimitedValues {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    guard enqueueLatestValue(observedValue) else {
+                        break
+                    }
+                }
+            case let .debounce(debounce):
+                await forEachImmediateFirstDebouncedOwnerValue(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value,
+                    debounce: debounce,
+                    debounceClock: rateLimitClock,
+                    emitFirstInline: true
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
+                }
+            case let .throttle(throttle):
+                await forEachThrottledOwnerValue(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    of: value,
+                    throttle: throttle,
+                    throttleClock: rateLimitClock,
+                    emitReadyValuesInline: true
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
                 }
             }
         } else {
@@ -692,22 +826,53 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
         }
 
         if let rateLimit {
-            let observedValues = makeObservedValueStreamNonSendable(
-                ownerToken: ownerToken,
-                isolation: isolation,
-                of: value
-            )
-            let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
-                observedValues,
-                rateLimit: rateLimit,
-                rateLimitClock: rateLimitClock
-            )
-            for await observedValue in rateLimitedValues {
-                guard !Task.isCancelled else {
-                    break
+            switch rateLimit {
+            case let .debounce(debounce) where debounce.mode == .delayedFirst:
+                let observedValues = makeObservedValueStreamNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value
+                )
+                let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
+                    observedValues,
+                    rateLimit: rateLimit,
+                    rateLimitClock: rateLimitClock
+                )
+                for await observedValue in rateLimitedValues {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
+                        break
+                    }
                 }
-                guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
-                    break
+            case let .debounce(debounce):
+                await forEachImmediateFirstDebouncedOwnerValueNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value,
+                    debounce: debounce,
+                    debounceClock: rateLimitClock,
+                    emitFirstInline: true
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
+                }
+            case let .throttle(throttle):
+                await forEachThrottledOwnerValueNonSendable(
+                    ownerToken: ownerToken,
+                    isolation: isolation,
+                    of: value,
+                    throttle: throttle,
+                    throttleClock: rateLimitClock,
+                    emitReadyValuesInline: true
+                ) { observedValue in
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
                 }
             }
         } else {
@@ -851,6 +1016,461 @@ private func forEachOwnerValueEmissionNonSendable<Owner: AnyObject, Value>(
         }
         return await consume(emission)
     }
+}
+
+private func forEachImmediateFirstDebouncedOwnerValue<Owner: AnyObject, Value: Sendable>(
+    ownerToken: UInt64,
+    options: ObservationOptions,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    debounce: ObservationDebounce,
+    debounceClock: any Clock<Duration>,
+    emitFirstInline: Bool,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    await forEachImmediateFirstDebouncedValue(
+        debounce: debounce,
+        debounceClock: debounceClock,
+        emitFirstInline: emitFirstInline
+    ) { consumeValue in
+        await forEachOwnerValueEmission(
+            ownerToken: ownerToken,
+            options: options,
+            isolation: isolation,
+            of: value
+        ) { emission in
+            switch emission {
+            case .ownerGone:
+                return false
+            case .value(let observedValue):
+                guard !Task.isCancelled else {
+                    return false
+                }
+                return await consumeValue(observedValue)
+            }
+        }
+    } consume: { observedValue in
+        await consume(observedValue)
+    }
+}
+
+private func forEachImmediateFirstDebouncedOwnerValueNonSendable<Owner: AnyObject, Value>(
+    ownerToken: UInt64,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    debounce: ObservationDebounce,
+    debounceClock: any Clock<Duration>,
+    emitFirstInline: Bool,
+    consume: @escaping @Sendable (_UncheckedSendableValueBox<Value>) async -> Bool
+) async {
+    await forEachImmediateFirstDebouncedValue(
+        debounce: debounce,
+        debounceClock: debounceClock,
+        emitFirstInline: emitFirstInline
+    ) { consumeValue in
+        await forEachOwnerValueEmissionNonSendable(
+            ownerToken: ownerToken,
+            isolation: isolation,
+            of: value
+        ) { emission in
+            switch emission {
+            case .ownerGone:
+                return false
+            case .value(let observedValue):
+                guard !Task.isCancelled else {
+                    return false
+                }
+                return await consumeValue(observedValue)
+            }
+        }
+    } consume: { observedValue in
+        await consume(observedValue)
+    }
+}
+
+private func forEachImmediateFirstDebouncedValue<Value: Sendable>(
+    debounce: ObservationDebounce,
+    debounceClock: any Clock<Duration>,
+    emitFirstInline: Bool,
+    source: (@escaping @Sendable (Value) async -> Bool) async -> Void,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    let (remainingStream, remainingContinuation) = AsyncStream<Value>.makeStream(
+        bufferingPolicy: .bufferingNewest(1)
+    )
+    let (outputStream, outputContinuation) = AsyncStream<Value>.makeStream(
+        bufferingPolicy: .unbounded
+    )
+    let state = Mutex(ImmediateFirstDebounceExecutionState())
+    let delayedDebounce = ObservationDebounce(
+        interval: debounce.interval,
+        tolerance: debounce.tolerance,
+        mode: .delayedFirst
+    )
+    let consumerTask = makeObservationTask {
+        for await observedValue in outputStream {
+            guard !Task.isCancelled else {
+                break
+            }
+            guard await consume(observedValue) else {
+                state.withLock { state in
+                    state.shouldStop = true
+                }
+                break
+            }
+        }
+    }
+    let debounceTask = makeObservationTask {
+        let debouncedValues = makeDebouncedValueStream(
+            remainingStream,
+            debounce: delayedDebounce,
+            debounceClock: debounceClock
+        )
+        for await observedValue in debouncedValues {
+            guard !Task.isCancelled else {
+                break
+            }
+            let shouldStop = state.withLock { state in
+                state.shouldStop
+            }
+            guard !shouldStop else {
+                break
+            }
+            outputContinuation.yield(observedValue)
+        }
+    }
+
+    await withTaskCancellationHandler {
+        await source { observedValue in
+            let shouldEmitFirst: Bool? = state.withLock { state in
+                guard !state.shouldStop else {
+                    return nil
+                }
+                guard state.didEmitFirst else {
+                    state.didEmitFirst = true
+                    return true
+                }
+                return false
+            }
+
+            guard let shouldEmitFirst else {
+                return false
+            }
+
+            if shouldEmitFirst {
+                if emitFirstInline {
+                    guard await consume(observedValue) else {
+                        state.withLock { state in
+                            state.shouldStop = true
+                        }
+                        return false
+                    }
+                    return !Task.isCancelled
+                }
+
+                outputContinuation.yield(observedValue)
+                return state.withLock { state in
+                    !state.shouldStop
+                } && !Task.isCancelled
+            }
+
+            remainingContinuation.yield(observedValue)
+            return state.withLock { state in
+                !state.shouldStop
+            } && !Task.isCancelled
+        }
+
+        remainingContinuation.finish()
+        await debounceTask.value
+        outputContinuation.finish()
+        await consumerTask.value
+    } onCancel: {
+        state.withLock { state in
+            state.shouldStop = true
+        }
+        remainingContinuation.finish()
+        debounceTask.cancel()
+        outputContinuation.finish()
+        consumerTask.cancel()
+    }
+}
+
+private func forEachThrottledOwnerValue<Owner: AnyObject, Value: Sendable>(
+    ownerToken: UInt64,
+    options: ObservationOptions,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    throttle: ObservationThrottle,
+    throttleClock: any Clock<Duration>,
+    emitReadyValuesInline: Bool,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    await forEachThrottledValue(
+        throttle: throttle,
+        throttleClock: throttleClock,
+        emitReadyValuesInline: emitReadyValuesInline
+    ) { consumeValue in
+        await forEachOwnerValueEmission(
+            ownerToken: ownerToken,
+            options: options,
+            isolation: isolation,
+            of: value
+        ) { emission in
+            switch emission {
+            case .ownerGone:
+                return false
+            case .value(let observedValue):
+                guard !Task.isCancelled else {
+                    return false
+                }
+                return await consumeValue(observedValue)
+            }
+        }
+    } consume: { observedValue in
+        await consume(observedValue)
+    }
+}
+
+private func forEachThrottledOwnerValueNonSendable<Owner: AnyObject, Value>(
+    ownerToken: UInt64,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    throttle: ObservationThrottle,
+    throttleClock: any Clock<Duration>,
+    emitReadyValuesInline: Bool,
+    consume: @escaping @Sendable (_UncheckedSendableValueBox<Value>) async -> Bool
+) async {
+    await forEachThrottledValue(
+        throttle: throttle,
+        throttleClock: throttleClock,
+        emitReadyValuesInline: emitReadyValuesInline
+    ) { consumeValue in
+        await forEachOwnerValueEmissionNonSendable(
+            ownerToken: ownerToken,
+            isolation: isolation,
+            of: value
+        ) { emission in
+            switch emission {
+            case .ownerGone:
+                return false
+            case .value(let observedValue):
+                guard !Task.isCancelled else {
+                    return false
+                }
+                return await consumeValue(observedValue)
+            }
+        }
+    } consume: { observedValue in
+        await consume(observedValue)
+    }
+}
+
+private func forEachThrottledValue<Value: Sendable>(
+    throttle: ObservationThrottle,
+    throttleClock: any Clock<Duration>,
+    emitReadyValuesInline: Bool,
+    source: (@escaping @Sendable (Value) async -> Bool) async -> Void,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    await forEachThrottledValue(
+        throttle: throttle,
+        clock: throttleClock,
+        emitReadyValuesInline: emitReadyValuesInline,
+        source: source,
+        consume: consume
+    )
+}
+
+private func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
+    throttle: ObservationThrottle,
+    clock: C,
+    emitReadyValuesInline: Bool,
+    source: (@escaping @Sendable (Value) async -> Bool) async -> Void,
+    consume: @escaping @Sendable (Value) async -> Bool
+) async {
+    let stateBox = ThrottleStateBox<Value>()
+    let timerTaskBox = ObservationTaskBox()
+    let consumerState = Mutex(RateLimitedConsumerState())
+    let drainState = Mutex(RateLimitedDrainState())
+    let (wakeStream, wakeSignal) = AsyncStream<Void>.makeStream(
+        bufferingPolicy: .bufferingNewest(1)
+    )
+    let (drainFinishedStream, drainFinishedSignal) = AsyncStream<Void>.makeStream(
+        bufferingPolicy: .bufferingNewest(1)
+    )
+    let (outputStream, outputContinuation) = AsyncStream<Value>.makeStream(
+        bufferingPolicy: .unbounded
+    )
+    let keepLatestPending = throttle.mode == .latest
+    let throttleInterval = throttle.interval
+    let consumerTask = makeObservationTask {
+        for await observedValue in outputStream {
+            guard !Task.isCancelled else {
+                break
+            }
+            guard await consume(observedValue) else {
+                consumerState.withLock { state in
+                    state.shouldStop = true
+                }
+                break
+            }
+        }
+    }
+
+    let scheduleTimer: @Sendable (UInt64) -> Void = { token in
+        let timerTask = makeObservationTask { @Sendable [stateBox, wakeSignal, clock, throttleInterval] in
+            do {
+                try await clock.sleep(until: clock.now.advanced(by: throttleInterval), tolerance: nil)
+                guard !Task.isCancelled else {
+                    return
+                }
+                let shouldWake = stateBox.state.withLock { state in
+                    state.expireTimer(token: token)
+                }
+                if shouldWake {
+                    wakeSignal.yield(())
+                }
+            } catch is CancellationError {
+            } catch {
+                preconditionFailure("throttle timer unexpectedly threw")
+            }
+        }
+        timerTaskBox.replace(with: timerTask)
+    }
+
+    let drainThrottleActionsWithOwnership: @Sendable () async -> Bool = {
+        while !Task.isCancelled {
+            let action = stateBox.state.withLock { state -> ThrottleAction<Value> in
+                state.nextAction()
+            }
+
+            switch action {
+            case let .emit(value, timerToken, finishAfterEmit):
+                if let timerToken {
+                    scheduleTimer(timerToken)
+                } else {
+                    timerTaskBox.cancel()
+                }
+                if emitReadyValuesInline {
+                    guard await consume(value) else {
+                        consumerState.withLock { state in
+                            state.shouldStop = true
+                        }
+                        return false
+                    }
+                } else {
+                    outputContinuation.yield(value)
+                }
+                if finishAfterEmit {
+                    return false
+                }
+            case .finish:
+                timerTaskBox.cancel()
+                return false
+            case .idle:
+                return true
+            }
+        }
+        return false
+    }
+
+    let drainThrottleActions: @Sendable () async -> Bool = {
+        let shouldStartDrain = drainState.withLock { state in
+            if state.isDraining {
+                state.needsDrain = true
+                return false
+            }
+            state.isDraining = true
+            return true
+        }
+
+        guard shouldStartDrain else {
+            return consumerState.withLock { state in
+                !state.shouldStop
+            } && !Task.isCancelled
+        }
+
+        while true {
+            let shouldContinue = await drainThrottleActionsWithOwnership()
+            if !shouldContinue {
+                drainFinishedSignal.yield(())
+            }
+            let shouldDrainAgain = drainState.withLock { state in
+                guard shouldContinue, state.needsDrain else {
+                    state.isDraining = false
+                    state.needsDrain = false
+                    return false
+                }
+                state.needsDrain = false
+                return true
+            }
+
+            guard shouldDrainAgain else {
+                return shouldContinue
+            }
+        }
+    }
+
+    let waitForThrottleDrainToFinish: @Sendable () async -> Void = {
+        while drainState.withLock({ state in state.isDraining }) {
+            await Task.yield()
+        }
+    }
+
+    let timerDrainTask = makeObservationTask {
+        for await _ in wakeStream {
+            guard await drainThrottleActions() else {
+                break
+            }
+        }
+    }
+
+    await withTaskCancellationHandler {
+        await source { observedValue in
+            guard !Task.isCancelled else {
+                return false
+            }
+            stateBox.state.withLock { state in
+                state.recordIncomingValue(
+                    observedValue,
+                    keepLatestPending: keepLatestPending
+                )
+            }
+            let shouldContinue = await drainThrottleActions()
+            let shouldStop = consumerState.withLock { state in
+                state.shouldStop
+            }
+            return shouldContinue && !shouldStop && !Task.isCancelled
+        }
+
+        stateBox.state.withLock { state in
+            state.finishSource()
+        }
+        let didFinish = !(await drainThrottleActions())
+        if !didFinish {
+            for await _ in drainFinishedStream {
+                break
+            }
+        }
+        await waitForThrottleDrainToFinish()
+        drainFinishedSignal.finish()
+        outputContinuation.finish()
+        await consumerTask.value
+    } onCancel: {
+        timerTaskBox.cancel()
+        wakeSignal.finish()
+        drainFinishedSignal.finish()
+        timerDrainTask.cancel()
+        outputContinuation.finish()
+        consumerTask.cancel()
+    }
+
+    timerTaskBox.cancel()
+    wakeSignal.finish()
+    drainFinishedSignal.finish()
+    timerDrainTask.cancel()
+    outputContinuation.finish()
+    consumerTask.cancel()
 }
 
 func makeRateLimitedValueStream<S: AsyncSequence & Sendable>(
