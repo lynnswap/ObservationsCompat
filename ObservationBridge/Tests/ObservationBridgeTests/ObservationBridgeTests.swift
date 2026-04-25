@@ -1068,6 +1068,95 @@ final class ObservationBridgeTests {
     }
 
     @Test
+    func observeNoRateLimitRecordsInitialValueBeforeReturnForNativeNonisolatedModel() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe(\.value, options: []) { value in
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(recorder.snapshot() == [0])
+    }
+
+    @Test
+    func observeTaskNoRateLimitStartsInitialOperationWithoutExplicitYieldForNativeNonisolatedModel() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observeTask(\.value, options: []) { value in
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder, nanoseconds: 1_000_000_000))
+        #expect(recorder.snapshot() == [0])
+    }
+
+    @Test
+    func observeTaskNoRateLimitSynchronousInitialOperationDoesNotDeadlock() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let recorder = ValueRecorder<Int>()
+        for iteration in 0..<20 {
+            let model = CounterModel()
+            model.value = iteration
+
+            let handle = model.observeTask(\.value, options: []) { value in
+                recorder.append(value)
+            }
+
+            #expect(await waitUntilCount(iteration + 1, in: recorder, nanoseconds: 1_000_000_000))
+            handle.cancel()
+        }
+    }
+
+    @Test
+    func observeTaskNoRateLimitImmediateCancelDoesNotLeakStartingOperation() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        for _ in 0..<20 {
+            let model = CounterModel()
+            let started = ValueQueue<Int>()
+            let cancelled = ValueQueue<Int>()
+
+            let handle = model.observeTask(\.value, options: []) { value in
+                await started.push(value)
+                await withTaskCancellationHandler {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                } onCancel: {
+                    Task {
+                        await cancelled.push(value)
+                    }
+                }
+            }
+
+            handle.cancel()
+
+            guard let startedValue = await nextWithTimeout(from: started, nanoseconds: 100_000_000) else {
+                continue
+            }
+            #expect(startedValue == 0)
+            #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
+        }
+    }
+
+    @Test
     func observeOptionalKeyPathEmitsInitialNilAndTransitions() async {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int?>()
