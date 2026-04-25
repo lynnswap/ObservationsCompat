@@ -1061,7 +1061,7 @@ private func makeNativeStream<Value: Sendable>(
     isolation: (any Actor)?
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
-        let task = Task {
+        let task = Task.immediate {
             await drainNativeObservationValues(
                 observe: observe,
                 isolation: isolation,

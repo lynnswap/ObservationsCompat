@@ -720,6 +720,92 @@ final class ObservationBridgeTests {
     }
 
     @Test
+    func nativeNoRateLimitObservationBridgeIteratorReturnsInitialAndUpdatedValues() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let stream = ObservationBridge {
+            model.value
+        }
+        var iterator = stream.makeAsyncIterator()
+
+        #expect(await iterator.next() == 0)
+
+        model.value = 42
+        #expect(await iterator.next() == 42)
+    }
+
+    @Test
+    func nativeNoRateLimitMakeObservationBridgeStreamIteratorReturnsInitialAndUpdatedValues() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let stream = makeObservationBridgeStream {
+            model.value
+        }
+        var iterator = stream.makeAsyncIterator()
+
+        #expect(await iterator.next() == 0)
+
+        model.value = 9
+        #expect(await iterator.next() == 9)
+    }
+
+    @Test
+    func nativeNoRateLimitObservationBridgeBuffersUpdatesWhileConsumerIsBetweenPulls() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let stream = ObservationBridge {
+            model.value
+        }
+        let queue = ValueQueue<Int>()
+        let releaseConsumer = ValueQueue<Void>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+                if value == 0 {
+                    _ = await releaseConsumer.next()
+                }
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        await Task.yield()
+        await releaseConsumer.push(())
+
+        #expect(await nextWithTimeout(from: queue) == 1)
+    }
+
+    @Test
+    func nativeNoRateLimitObservationBridgeIteratorPreservesInitialOptionalNil() async {
+        guard #available(iOS 26.0, macOS 26.0, *) else {
+            return
+        }
+
+        let model = OptionalCounterModel()
+        let stream = ObservationBridge {
+            model.value
+        }
+        var iterator = stream.makeAsyncIterator()
+
+        #expect(await iterator.next() == .some(nil))
+
+        model.value = 3
+        #expect(await iterator.next() == 3)
+    }
+
+    @Test
     func legacyBackendPreservesObserveIsolationAcrossDetachedCreation() async {
         let model = CounterModel()
         let observeOnMainActor: @MainActor @Sendable () -> Int = {
