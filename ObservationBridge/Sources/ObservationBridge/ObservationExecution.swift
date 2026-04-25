@@ -32,6 +32,7 @@ private struct RateLimitedConsumerState: Sendable {
 private struct RateLimitedDrainState: Sendable {
     var isDraining = false
     var needsDrain = false
+    var waiters: [CheckedContinuation<Void, Never>] = []
 }
 
 private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
@@ -1392,17 +1393,22 @@ func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
 
         while true {
             let shouldContinue = await drainThrottleActionsWithOwnership()
-            if !shouldContinue {
-                drainFinishedSignal.yield(())
-            }
-            let shouldDrainAgain = drainState.withLock { state in
+            let (shouldDrainAgain, waiters) = drainState.withLock { state in
                 guard shouldContinue, state.needsDrain else {
                     state.isDraining = false
                     state.needsDrain = false
-                    return false
+                    let waiters = state.waiters
+                    state.waiters = []
+                    return (false, waiters)
                 }
                 state.needsDrain = false
-                return true
+                return (true, [])
+            }
+            for waiter in waiters {
+                waiter.resume()
+            }
+            if !shouldContinue {
+                drainFinishedSignal.yield(())
             }
 
             guard shouldDrainAgain else {
@@ -1411,9 +1417,33 @@ func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
         }
     }
 
+    let resumeThrottleDrainWaiters: @Sendable () -> Void = {
+        let waiters = drainState.withLock { state in
+            let waiters = state.waiters
+            state.waiters = []
+            return waiters
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
     let waitForThrottleDrainToFinish: @Sendable () async -> Void = {
-        while drainState.withLock({ state in state.isDraining }) {
-            await Task.yield()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let shouldResumeImmediately = drainState.withLock { state in
+                    guard state.isDraining else {
+                        return true
+                    }
+                    state.waiters.append(continuation)
+                    return false
+                }
+                if shouldResumeImmediately {
+                    continuation.resume()
+                }
+            }
+        } onCancel: {
+            resumeThrottleDrainWaiters()
         }
     }
     let isWaitingForThrottleTimerAfterSourceFinish: @Sendable () -> Bool = {
@@ -1474,6 +1504,7 @@ func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
         timerTaskBox.cancel()
         wakeSignal.finish()
         drainFinishedSignal.finish()
+        resumeThrottleDrainWaiters()
         timerDrainTask.cancel()
         outputContinuation.finish()
         consumerTask.cancel()
