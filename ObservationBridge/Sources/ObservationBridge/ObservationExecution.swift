@@ -15,6 +15,11 @@ private struct ObservedValueChannel<Value: Sendable>: Sendable {
     let producerTask: Task<Void, Never>
 }
 
+private struct PendingObserveTaskOperation<Value: Sendable>: Sendable {
+    let id: UInt64
+    let value: Value
+}
+
 private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var activeOperationTask: Task<Void, Never>? = nil
     var activeOperationID: UInt64? = nil
@@ -25,6 +30,20 @@ private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var pendingCoalescedValue: Value? = nil
     var lastDeliveredValue: Value? = nil
     var isCancelled = false
+
+    var hasActiveOperation: Bool {
+        activeOperationID != nil
+    }
+}
+
+@discardableResult
+private func makeObservationTask<Success: Sendable>(
+    @_inheritActorContext operation: @escaping @isolated(any) @Sendable () async -> Success
+) -> Task<Success, Never> {
+    if #available(iOS 26.0, macOS 26.0, *) {
+        return Task.immediate(operation: operation)
+    }
+    return Task(operation: operation)
 }
 
 private final class ObservationExecutionLifetime: Sendable {
@@ -169,22 +188,22 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     lifetime.addCancellationHandler {
         WeakOwnerRegistry.removeToken(ownerToken)
     }
-    let monitorTask = Task {
-        let observedValues = makeObservedValueChannel(
-            ownerToken: ownerToken,
-            options: options,
-            isolation: isolation,
-            of: value
-        )
-        lifetime.addCancellationHandler {
-            observedValues.producerTask.cancel()
-            observedValues.channel.finish()
-        }
+    let monitorTask = makeObservationTask {
         defer {
             lifetime.cancel()
         }
 
         if let rateLimit {
+            let observedValues = makeObservedValueChannel(
+                ownerToken: ownerToken,
+                options: options,
+                isolation: isolation,
+                of: value
+            )
+            lifetime.addCancellationHandler {
+                observedValues.producerTask.cancel()
+                observedValues.channel.finish()
+            }
             let rateLimitedValues = makeRateLimitedValueStream(
                 observedValues.channel,
                 rateLimit: rateLimit,
@@ -197,11 +216,22 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
                 await onChange(observedValue)
             }
         } else {
-            for await observedValue in observedValues.channel {
-                guard !Task.isCancelled else {
-                    break
+            await forEachOwnerValueEmission(
+                ownerToken: ownerToken,
+                options: options,
+                isolation: isolation,
+                of: value
+            ) { emission in
+                switch emission {
+                case .ownerGone:
+                    return false
+                case .value(let observedValue):
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
                 }
-                await onChange(observedValue)
             }
         }
     }
@@ -231,18 +261,17 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
     lifetime.addCancellationHandler {
         WeakOwnerRegistry.removeToken(ownerToken)
     }
-    let monitorTask = Task {
+    let monitorTask = makeObservationTask {
         defer {
             lifetime.cancel()
         }
 
-        let observedValues = makeObservedValueStreamNonSendable(
-            ownerToken: ownerToken,
-            isolation: isolation,
-            of: value
-        )
-
         if let rateLimit {
+            let observedValues = makeObservedValueStreamNonSendable(
+                ownerToken: ownerToken,
+                isolation: isolation,
+                of: value
+            )
             let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
                 observedValues,
                 rateLimit: rateLimit,
@@ -255,11 +284,21 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
                 await onChange(_UncheckedSendableValueBox(observedValue))
             }
         } else {
-            for await observedValue in observedValues {
-                guard !Task.isCancelled else {
-                    break
+            await forEachOwnerValueEmissionNonSendable(
+                ownerToken: ownerToken,
+                isolation: isolation,
+                of: value
+            ) { emission in
+                switch emission {
+                case .ownerGone:
+                    return false
+                case .value(let observedValue):
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    await onChange(observedValue)
+                    return !Task.isCancelled
                 }
-                await onChange(_UncheckedSendableValueBox(observedValue))
             }
         }
     }
@@ -344,10 +383,10 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 
             if state.pendingNextValue == nil {
                 state.pendingNextValue = observedValue
-                return (accepted: true, shouldWake: state.activeOperationTask == nil)
+                return (accepted: true, shouldWake: !state.hasActiveOperation)
             }
 
-            if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
+            if !state.hasActiveOperation, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
                 state.pendingFollowingValue = observedValue
                 return (accepted: true, shouldWake: false)
             }
@@ -366,19 +405,19 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         return true
     }
 
-    let drainTask = Task {
+    let drainTask = makeObservationTask {
         for await _ in operationWakeStream {
             guard !Task.isCancelled else {
                 break
             }
 
             while true {
-                let startedOperation: Bool = observeTaskState.withLock { state -> Bool in
+                let pendingOperation: PendingObserveTaskOperation<Value>? = observeTaskState.withLock { state -> PendingObserveTaskOperation<Value>? in
                     guard !state.isCancelled else {
-                        return false
+                        return nil
                     }
-                    guard state.activeOperationTask == nil, let nextValue = state.pendingNextValue else {
-                        return false
+                    guard !state.hasActiveOperation, let nextValue = state.pendingNextValue else {
+                        return nil
                     }
 
                     if let pendingFollowingValue = state.pendingFollowingValue {
@@ -392,16 +431,26 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                     state.nextOperationID &+= 1
                     state.activeOperationID = operationID
                     state.activeOperationValue = nextValue
-                    let operation = Task {
-                        await task(nextValue)
-                        operationDidFinish(operationID)
-                    }
-                    state.activeOperationTask = operation
-                    return true
+                    return PendingObserveTaskOperation(id: operationID, value: nextValue)
                 }
 
-                guard startedOperation else {
+                guard let pendingOperation else {
                     break
+                }
+
+                let operation = makeObservationTask {
+                    await task(pendingOperation.value)
+                    operationDidFinish(pendingOperation.id)
+                }
+                let shouldCancelOperation = observeTaskState.withLock { state -> Bool in
+                    guard !state.isCancelled, state.activeOperationID == pendingOperation.id else {
+                        return true
+                    }
+                    state.activeOperationTask = operation
+                    return false
+                }
+                if shouldCancelOperation {
+                    operation.cancel()
                 }
             }
         }
@@ -420,22 +469,22 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         drainTask.cancel()
     }
 
-    let monitorTask = Task {
-        let observedValues = makeObservedValueChannel(
-            ownerToken: ownerToken,
-            options: options,
-            isolation: isolation,
-            of: value
-        )
-        lifetime.addCancellationHandler {
-            observedValues.producerTask.cancel()
-            observedValues.channel.finish()
-        }
+    let monitorTask = makeObservationTask {
         defer {
             lifetime.cancel()
         }
 
         if let rateLimit {
+            let observedValues = makeObservedValueChannel(
+                ownerToken: ownerToken,
+                options: options,
+                isolation: isolation,
+                of: value
+            )
+            lifetime.addCancellationHandler {
+                observedValues.producerTask.cancel()
+                observedValues.channel.finish()
+            }
             let rateLimitedValues = makeRateLimitedValueStream(
                 observedValues.channel,
                 rateLimit: rateLimit,
@@ -450,12 +499,20 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 }
             }
         } else {
-            for await observedValue in observedValues.channel {
-                guard !Task.isCancelled else {
-                    break
-                }
-                guard enqueueLatestValue(observedValue) else {
-                    break
+            await forEachOwnerValueEmission(
+                ownerToken: ownerToken,
+                options: options,
+                isolation: isolation,
+                of: value
+            ) { emission in
+                switch emission {
+                case .ownerGone:
+                    return false
+                case .value(let observedValue):
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
                 }
             }
         }
@@ -543,10 +600,10 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
 
             if state.pendingNextValue == nil {
                 state.pendingNextValue = observedValue
-                return (accepted: true, shouldWake: state.activeOperationTask == nil)
+                return (accepted: true, shouldWake: !state.hasActiveOperation)
             }
 
-            if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
+            if !state.hasActiveOperation, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
                 state.pendingFollowingValue = observedValue
                 return (accepted: true, shouldWake: false)
             }
@@ -565,19 +622,19 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
         return true
     }
 
-    let drainTask = Task {
+    let drainTask = makeObservationTask {
         for await _ in operationWakeStream {
             guard !Task.isCancelled else {
                 break
             }
 
             while true {
-                let startedOperation: Bool = observeTaskState.withLock { state -> Bool in
+                let pendingOperation: PendingObserveTaskOperation<_UncheckedSendableValueBox<Value>>? = observeTaskState.withLock { state -> PendingObserveTaskOperation<_UncheckedSendableValueBox<Value>>? in
                     guard !state.isCancelled else {
-                        return false
+                        return nil
                     }
-                    guard state.activeOperationTask == nil, let nextValue = state.pendingNextValue else {
-                        return false
+                    guard !state.hasActiveOperation, let nextValue = state.pendingNextValue else {
+                        return nil
                     }
 
                     if let pendingFollowingValue = state.pendingFollowingValue {
@@ -591,16 +648,26 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                     state.nextOperationID &+= 1
                     state.activeOperationID = operationID
                     state.activeOperationValue = nextValue
-                    let operation = Task {
-                        await task(nextValue)
-                        operationDidFinish(operationID)
-                    }
-                    state.activeOperationTask = operation
-                    return true
+                    return PendingObserveTaskOperation(id: operationID, value: nextValue)
                 }
 
-                guard startedOperation else {
+                guard let pendingOperation else {
                     break
+                }
+
+                let operation = makeObservationTask {
+                    await task(pendingOperation.value)
+                    operationDidFinish(pendingOperation.id)
+                }
+                let shouldCancelOperation = observeTaskState.withLock { state -> Bool in
+                    guard !state.isCancelled, state.activeOperationID == pendingOperation.id else {
+                        return true
+                    }
+                    state.activeOperationTask = operation
+                    return false
+                }
+                if shouldCancelOperation {
+                    operation.cancel()
                 }
             }
         }
@@ -619,18 +686,17 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
         drainTask.cancel()
     }
 
-    let monitorTask = Task {
+    let monitorTask = makeObservationTask {
         defer {
             lifetime.cancel()
         }
 
-        let observedValues = makeObservedValueStreamNonSendable(
-            ownerToken: ownerToken,
-            isolation: isolation,
-            of: value
-        )
-
         if let rateLimit {
+            let observedValues = makeObservedValueStreamNonSendable(
+                ownerToken: ownerToken,
+                isolation: isolation,
+                of: value
+            )
             let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
                 observedValues,
                 rateLimit: rateLimit,
@@ -645,12 +711,19 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                 }
             }
         } else {
-            for await observedValue in observedValues {
-                guard !Task.isCancelled else {
-                    break
-                }
-                guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
-                    break
+            await forEachOwnerValueEmissionNonSendable(
+                ownerToken: ownerToken,
+                isolation: isolation,
+                of: value
+            ) { emission in
+                switch emission {
+                case .ownerGone:
+                    return false
+                case .value(let observedValue):
+                    guard !Task.isCancelled else {
+                        return false
+                    }
+                    return enqueueLatestValue(observedValue)
                 }
             }
         }
@@ -745,6 +818,38 @@ private func makeObservedValueStreamNonSendable<Owner: AnyObject, Value>(
         continuation.onTermination = { _ in
             task.cancel()
         }
+    }
+}
+
+private func forEachOwnerValueEmissionNonSendable<Owner: AnyObject, Value>(
+    ownerToken: UInt64,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    consume: @escaping @Sendable (OwnerValueEmission<_UncheckedSendableValueBox<Value>>) async -> Bool
+) async {
+    let resolveOwner = WeakOwnerRegistry.ownerAccessor(token: ownerToken)
+    let resolvedIsolation = value.isolation ?? isolation
+    let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<_UncheckedSendableValueBox<Value>> = {
+        switch _ObservationBridgeLegacy.legacyEvaluateObservedOwnerValue(
+            owner: resolveOwner() as? Owner,
+            value: value,
+            map: _UncheckedSendableValueBox.init
+        ) {
+        case .ownerGone:
+            return .ownerGone
+        case .value(let observedValue):
+            return .value(observedValue)
+        }
+    }
+
+    await forEachLegacyObservationEmission(
+        observeOwnerValue,
+        isolation: resolvedIsolation
+    ) { emission in
+        guard !Task.isCancelled else {
+            return false
+        }
+        return await consume(emission)
     }
 }
 
