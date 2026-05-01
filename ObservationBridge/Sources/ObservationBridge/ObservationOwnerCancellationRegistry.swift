@@ -11,21 +11,21 @@ enum OwnerCancellationRegistry {
 #endif
 
     static func register(
-        _ box: ObservationHandleBox,
+        _ handle: ObservationHandle,
         owner: AnyObject
     ) {
 #if canImport(ObjectiveC)
-        let boxID = ObjectIdentifier(box)
+        let handleID = ObjectIdentifier(handle)
         let store = loadOrCreateStore(owner: owner)
-        store.insertCancellationHandler(id: boxID) { [weak box] in
-            box?.cancel()
+        store.insertCancellationHandler(id: handleID) { [weak handle] in
+            handle?.cancel()
         }
 
-        box.addCancellationHandler { [weak store] in
-            store?.remove(id: boxID)
+        handle.addCancellationHandler { [weak store] in
+            store?.remove(id: handleID)
         }
 #else
-        _ = box
+        _ = handle
         _ = owner
 #endif
     }

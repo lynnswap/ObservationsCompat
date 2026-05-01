@@ -7,8 +7,8 @@ It provides two usage styles:
 - owner-bound callbacks: `observe` / `observeTask`
 - `AsyncSequence` wrappers: `ObservationBridge` / `makeObservationBridgeStream`
 
-`observe` / `observeTask` return an `ObservationHandle`.
-Retain the handle while observation should stay active.
+`observe` / `observeTask` return an `ObservationRegistration`.
+Store registrations in an `ObservationScope` while observation should stay active.
 
 ## Requirements
 
@@ -23,12 +23,12 @@ Retain the handle while observation should stay active.
 ```swift
 import ObservationBridge
 
-var cancellables = Set<ObservationHandle>()
+let observations = ObservationScope()
 
 model.observe(\.count) { value in
     analytics.markCountChanged(value)
 }
-.store(in: &cancellables)
+.store(in: observations)
 ```
 
 ### Async updates (`observeTask`)
@@ -36,20 +36,21 @@ model.observe(\.count) { value in
 ```swift
 import ObservationBridge
 
-var cancellables = Set<ObservationHandle>()
+let observations = ObservationScope()
 
 model.observeTask(\.count) { value in
     await analytics.trackCount(value)
 }
-.store(in: &cancellables)
+.store(in: observations)
 ```
 
 ### Multiple key paths (trigger-only)
 
 ```swift
-let stateChangeHandle = model.observeTask([\.count, \.isEnabled]) {
+model.observeTask([\.count, \.isEnabled]) {
     await analytics.trackStateChanged()
 }
+.store(in: observations)
 ```
 
 If you need derived state from multiple key paths, use trigger-only observation and read the owner inside the callback or task.
@@ -121,17 +122,35 @@ for await value in stream {
 }
 ```
 
-## Direct Handle Control
+## Repeated UI Updates
 
-Use direct handle retention if you prefer property-based lifetime control:
+Use `ObservationScope.update` for repeated UI lifecycle updates. Observations declared
+again from the same call site keep their pipeline and only replace the callback.
+Observations omitted from the next update are cancelled.
 
 ```swift
-let countHandle = model.observe(\.count) { value in
+let observations = ObservationScope()
+
+func render() {
+    observations.update {
+        model.observe(\.count) { value in
+            countLabel.text = "\(value)"
+        }
+        .store(in: observations)
+    }
+}
+```
+
+Use `id:` only when you need explicit cancellation or a stable logical identity
+that does not match the call site.
+
+```swift
+model.observe(\.count, id: "header-count") { value in
     print("count = \(value)")
 }
+.store(in: observations)
 
-// Stop observation when needed.
-countHandle.cancel()
+observations.cancel(id: "header-count")
 ```
 
 ## Behavior Notes
@@ -142,7 +161,7 @@ Both APIs:
 - fall back to legacy `withObservationTracking` on older OS versions
 - support non-`Sendable` observed values when producer and consumer closures share the same actor isolation
 - create a fresh observation pipeline for each `ObservationBridge` iterator
-- require retaining the returned `ObservationHandle` to keep observation active
+- require storing the returned `ObservationRegistration` in an `ObservationScope` to keep observation active
 - cancel automatically if the observed owner is released
 
 Backend behavior note:
@@ -154,10 +173,40 @@ Backend behavior note:
 - `observeTask` never cancels in-flight work; it preserves the next selected output, then coalesces any additional backlog to the latest pending value
 - non-`Sendable` values always use the legacy backend, even on `iOS/macOS 26.0+`
 - non-`Sendable` observation preconditions producer/callback isolation equality; mismatch traps at runtime
-- keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
-- `cancel()` does not remove handles from your `Set`; remove them explicitly if desired
+- keep the owning `ObservationScope` alive while observation should continue
+- use `ObservationScope.update { ... }` when repeated updates should cancel observations that disappear
+- use `ObservationScope.cancel(id:)` or `cancelAll()` for explicit lifecycle shutdown
 
 ## Migration
+
+### v0.8.0
+
+- `observe` / `observeTask` now return `ObservationRegistration` and no longer start observation until `.store(in:)` is called.
+- `ObservationScope` is the lifecycle owner for callback observations.
+- `ObservationHandle`, direct `cancel()`, `Set<ObservationHandle>`, and `.store(in: &set)` have been removed from the public API.
+- Replace handle storage with `ObservationScope`:
+
+Before:
+
+```swift
+var cancellables = Set<ObservationHandle>()
+
+model.observeTask(\.count) { value in
+    await analytics.trackCount(value)
+}
+.store(in: &cancellables)
+```
+
+After:
+
+```swift
+let observations = ObservationScope()
+
+model.observeTask(\.count) { value in
+    await analytics.trackCount(value)
+}
+.store(in: observations)
+```
 
 ### v0.7.0
 
@@ -173,7 +222,7 @@ let stateStream = ObservationBridge {
     model.count
 }
 
-let handle = model.observeTask(
+model.observeTask(
     [\.count, \.isEnabled],
     of: { owner in (owner.count, owner.isEnabled) }
 ) { state in
@@ -184,9 +233,10 @@ let handle = model.observeTask(
 After:
 
 ```swift
-let handle = model.observeTask([\.count, \.isEnabled]) {
+model.observeTask([\.count, \.isEnabled]) {
     await analytics.trackState((model.count, model.isEnabled))
 }
+.store(in: observations)
 ```
 
 This is an intentional API reduction. Multi-keypath observers now only tell you that one of the tracked key paths changed; they do not preserve or deliver a producer-side snapshot anymore.
@@ -200,4 +250,4 @@ This is an intentional API reduction. Multi-keypath observers now only tell you 
 
 - Up to `v0.4.x`, `observe` / `observeTask` included owner-lifetime automatic handle retention.
 - Starting with `v0.5.0`, automatic handle retention is no longer supported.
-- Retain the returned `ObservationHandle` explicitly (for example, a stored property or `Set<ObservationHandle>`), or observation will stop when the handle is released.
+- Store the returned registration in an `ObservationScope`, or observation will not start.

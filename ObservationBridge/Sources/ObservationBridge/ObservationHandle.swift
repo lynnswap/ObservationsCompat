@@ -1,30 +1,6 @@
 import Synchronization
 
-public struct ObservationHandle: Sendable, Hashable {
-    let box: ObservationHandleBox
-
-    init(onCancel: @escaping @Sendable () -> Void) {
-        box = ObservationHandleBox(handlers: [onCancel])
-    }
-
-    public static func == (lhs: ObservationHandle, rhs: ObservationHandle) -> Bool {
-        ObjectIdentifier(lhs.box) == ObjectIdentifier(rhs.box)
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(ObjectIdentifier(box))
-    }
-
-    public func cancel() {
-        box.cancel()
-    }
-
-    public func store(in set: inout Set<ObservationHandle>) {
-        set.insert(self)
-    }
-}
-
-final class ObservationHandleBox: Sendable {
+final class ObservationHandle: Sendable {
     private struct State {
         var isCancelled = false
         var handlers: [@Sendable () -> Void]
@@ -32,8 +8,8 @@ final class ObservationHandleBox: Sendable {
 
     private let state: Mutex<State>
 
-    init(handlers: [@Sendable () -> Void]) {
-        state = Mutex(State(handlers: handlers))
+    init(onCancel: @escaping @Sendable () -> Void) {
+        state = Mutex(State(handlers: [onCancel]))
     }
 
     func addCancellationHandler(_ handler: @escaping @Sendable () -> Void) {

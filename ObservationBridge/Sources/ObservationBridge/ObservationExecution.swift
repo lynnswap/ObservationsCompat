@@ -309,7 +309,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         lifetime.cancel()
     }
 
-    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle, owner: owner)
     return handle
 }
 
@@ -410,7 +410,7 @@ func observeImplNonSendable<Owner: AnyObject, Value>(
         lifetime.cancel()
     }
 
-    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle, owner: owner)
     return handle
 }
 
@@ -658,7 +658,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         lifetime.cancel()
     }
 
-    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle, owner: owner)
     return handle
 }
 
@@ -900,7 +900,7 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
         lifetime.cancel()
     }
 
-    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle, owner: owner)
     return handle
 }
 
