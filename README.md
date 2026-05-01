@@ -1,6 +1,11 @@
 # ObservationBridge
 
-ObservationBridge is an integration layer that provides a consistent API for Swift Observations.
+ObservationBridge helps non-SwiftUI code consume `@Observable` state changes.
+
+It provides owner-bound `observe` / `observeTask` registrations and
+`AsyncSequence` streams, with explicit lifecycle ownership through
+`ObservationScope`, optional rate limiting, and backend compatibility across
+supported OS versions.
 
 It provides two usage styles:
 
