@@ -36,12 +36,12 @@ private enum StressRunMode: Sendable {
     var options: ObservationOptions {
         switch self {
         case .default:
-            return []
+            return ObservationOptions()
         case .forceLegacy:
             if #available(iOS 26.0, macOS 26.0, *) {
-                return [.legacyBackend]
+                return .legacyBackend
             }
-            return []
+            return ObservationOptions()
         }
     }
 }
