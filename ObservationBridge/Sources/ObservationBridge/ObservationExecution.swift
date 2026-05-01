@@ -540,7 +540,19 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                     break
                 }
 
+                let (operationStartStream, operationStartSignal) = AsyncStream<Bool>.makeStream(
+                    bufferingPolicy: .bufferingNewest(1)
+                )
                 let operation = makeObservationTask {
+                    var shouldStartOperation = false
+                    for await shouldStart in operationStartStream {
+                        shouldStartOperation = shouldStart
+                        break
+                    }
+                    guard shouldStartOperation, !Task.isCancelled else {
+                        operationDidFinish(pendingOperation.id)
+                        return
+                    }
                     await task(pendingOperation.value)
                     operationDidFinish(pendingOperation.id)
                 }
@@ -552,7 +564,12 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                     return false
                 }
                 if shouldCancelOperation {
+                    operationStartSignal.yield(false)
+                    operationStartSignal.finish()
                     operation.cancel()
+                } else {
+                    operationStartSignal.yield(true)
+                    operationStartSignal.finish()
                 }
             }
         }
@@ -790,7 +807,19 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                     break
                 }
 
+                let (operationStartStream, operationStartSignal) = AsyncStream<Bool>.makeStream(
+                    bufferingPolicy: .bufferingNewest(1)
+                )
                 let operation = makeObservationTask {
+                    var shouldStartOperation = false
+                    for await shouldStart in operationStartStream {
+                        shouldStartOperation = shouldStart
+                        break
+                    }
+                    guard shouldStartOperation, !Task.isCancelled else {
+                        operationDidFinish(pendingOperation.id)
+                        return
+                    }
                     await task(pendingOperation.value)
                     operationDidFinish(pendingOperation.id)
                 }
@@ -802,7 +831,12 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                     return false
                 }
                 if shouldCancelOperation {
+                    operationStartSignal.yield(false)
+                    operationStartSignal.finish()
                     operation.cancel()
+                } else {
+                    operationStartSignal.yield(true)
+                    operationStartSignal.finish()
                 }
             }
         }
@@ -1333,6 +1367,8 @@ func forEachThrottledValue<Value: Sendable, C: Clock<Duration>>(
                 }
             } catch is CancellationError {
             } catch {
+                // `Clock.sleep` is untyped throws; non-cancellation errors violate
+                // the clock contract expected by this rate-limit pipeline.
                 preconditionFailure("throttle timer unexpectedly threw")
             }
         }
@@ -1522,7 +1558,7 @@ func makeRateLimitedValueStream<S: AsyncSequence & Sendable>(
     _ source: S,
     rateLimit: ObservationRateLimit,
     rateLimitClock: any Clock<Duration>
-) -> AsyncStream<S.Element> where S.Element: Sendable {
+) -> AsyncStream<S.Element> where S.Element: Sendable, S.Failure == Never {
     switch rateLimit {
     case let .debounce(debounce):
         return makeDebouncedValueStream(
@@ -1543,7 +1579,7 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable>(
     _ source: S,
     debounce: ObservationDebounce,
     debounceClock: any Clock<Duration>
-) -> AsyncStream<S.Element> where S.Element: Sendable {
+) -> AsyncStream<S.Element> where S.Element: Sendable, S.Failure == Never {
     makeDebouncedValueStream(
         source,
         debounce: debounce,
@@ -1555,26 +1591,22 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
     _ source: S,
     debounce: ObservationDebounce,
     clock: C
-) -> AsyncStream<S.Element> where S.Element: Sendable {
+) -> AsyncStream<S.Element> where S.Element: Sendable, S.Failure == Never {
     switch debounce.mode {
     case .delayedFirst:
         return AsyncStream { continuation in
             let task = Task {
-                do {
-                    for try await value in source.debounce(
-                        for: debounce.interval,
-                        tolerance: debounce.tolerance,
-                        clock: clock
-                    ) {
-                        guard !Task.isCancelled else {
-                            break
-                        }
-                        continuation.yield(value)
+                for await value in source.debounce(
+                    for: debounce.interval,
+                    tolerance: debounce.tolerance,
+                    clock: clock
+                ) {
+                    guard !Task.isCancelled else {
+                        break
                     }
-                    continuation.finish()
-                } catch {
-                    preconditionFailure("debounce source unexpectedly threw")
+                    continuation.yield(value)
                 }
+                continuation.finish()
             }
 
             continuation.onTermination = { _ in
@@ -1588,32 +1620,20 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
                     bufferingPolicy: .bufferingNewest(1)
                 )
                 let producerTask = Task {
-                    do {
-                        var iterator = source.makeAsyncIterator()
-                        guard let firstValue = try await iterator.next() else {
-                            remainingContinuation.finish()
-                            return
-                        }
-
+                    var didEmitFirstValue = false
+                    for await nextValue in source {
                         guard !Task.isCancelled else {
-                            remainingContinuation.finish()
-                            return
+                            break
                         }
-
-                        continuation.yield(firstValue)
-
-                        while let nextValue = try await iterator.next() {
-                            guard !Task.isCancelled else {
-                                break
-                            }
-                            remainingContinuation.yield(nextValue)
+                        guard didEmitFirstValue else {
+                            didEmitFirstValue = true
+                            continuation.yield(nextValue)
+                            continue
                         }
-
-                        remainingContinuation.finish()
-                    } catch {
-                        remainingContinuation.finish()
-                        preconditionFailure("debounce source unexpectedly threw")
+                        remainingContinuation.yield(nextValue)
                     }
+
+                    remainingContinuation.finish()
                 }
 
                 for await value in remainingStream.debounce(
@@ -1643,7 +1663,7 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable>(
     _ source: S,
     throttle: ObservationThrottle,
     throttleClock: any Clock<Duration>
-) -> AsyncStream<S.Element> where S.Element: Sendable {
+) -> AsyncStream<S.Element> where S.Element: Sendable, S.Failure == Never {
     makeThrottledValueStream(
         source,
         throttle: throttle,
@@ -1655,7 +1675,7 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
     _ source: S,
     throttle: ObservationThrottle,
     clock: C
-) -> AsyncStream<S.Element> where S.Element: Sendable {
+) -> AsyncStream<S.Element> where S.Element: Sendable, S.Failure == Never {
     AsyncStream { continuation in
         let task = Task {
             let stateBox = ThrottleStateBox<S.Element>()
@@ -1667,26 +1687,22 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
             let throttleInterval = throttle.interval
 
             let sourceTask = Task { @Sendable [stateBox, wakeSignal, keepLatestPending, source] in
-                do {
-                    for try await value in source {
-                        guard !Task.isCancelled else {
-                            break
-                        }
-                        stateBox.state.withLock { state in
-                            state.recordIncomingValue(
-                                value,
-                                keepLatestPending: keepLatestPending
-                            )
-                        }
-                        wakeSignal.yield(())
+                for await value in source {
+                    guard !Task.isCancelled else {
+                        break
                     }
                     stateBox.state.withLock { state in
-                        state.finishSource()
+                        state.recordIncomingValue(
+                            value,
+                            keepLatestPending: keepLatestPending
+                        )
                     }
                     wakeSignal.yield(())
-                } catch {
-                    preconditionFailure("throttle source unexpectedly threw")
                 }
+                stateBox.state.withLock { state in
+                    state.finishSource()
+                }
+                wakeSignal.yield(())
             }
 
             defer {
@@ -1712,6 +1728,8 @@ func makeThrottledValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
                         }
                     } catch is CancellationError {
                     } catch {
+                        // `Clock.sleep` is untyped throws; non-cancellation errors violate
+                        // the clock contract expected by this rate-limit pipeline.
                         preconditionFailure("throttle timer unexpectedly threw")
                     }
                 }

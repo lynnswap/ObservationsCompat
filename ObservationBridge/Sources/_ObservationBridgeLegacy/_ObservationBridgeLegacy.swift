@@ -112,6 +112,8 @@ private func callIsolatedWithFastPath<Value>(
         return unisolated()
     }
 
+    // Swift cannot synchronously call an arbitrary @isolated(any) closure here;
+    // this conversion is expected to preserve the legacy same-isolation path.
     let result = Result(catching: closure)
     switch result {
     case .success(let value):
@@ -131,6 +133,8 @@ private func callIsolatedWithFastPath<Input, Value>(
         return unisolated(input)
     }
 
+    // Swift cannot synchronously call an arbitrary @isolated(any) closure here;
+    // this conversion is expected to preserve the legacy same-isolation path.
     let result = Optional(input).map(closure)
     switch result {
     case .some(let value):

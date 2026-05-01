@@ -40,6 +40,8 @@ enum OwnerCancellationRegistry {
             let store = ObservationOwnerCancellationStore()
             unsafe objc_setAssociatedObject(owner, &lifetimeStoreKey, store, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             guard let attached = unsafe objc_getAssociatedObject(owner, &lifetimeStoreKey) as? ObservationOwnerCancellationStore else {
+                // Obj-C associated-object storage is required for owner-bound
+                // automatic cancellation; failure means the owner cannot host it.
                 preconditionFailure("owner cancellation registration is unsupported for this owner type")
             }
             return attached

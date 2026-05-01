@@ -177,13 +177,15 @@ private func stressSeed(default defaultSeed: UInt64) -> UInt64 {
 }
 
 private func legacyOptionsForCurrentRuntime(
-    _ additional: ObservationOptions = []
+    _ additional: ObservationOptions = ObservationOptions()
 ) -> ObservationOptions {
-    var options = additional
     if #available(iOS 26.0, macOS 26.0, *) {
-        options.formUnion([.legacyBackend])
+        return ObservationOptions(
+            rateLimit: additional.rateLimit,
+            backend: .legacy
+        )
     }
-    return options
+    return additional
 }
 
 private actor ValueQueue<Value: Sendable> {
@@ -998,7 +1000,7 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.debounce(debounce))),
             clock: clock
         ) {
             model.value
@@ -1034,7 +1036,7 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.debounce(debounce))),
             clock: clock
         ) {
             model.parity
@@ -1069,7 +1071,7 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.rateLimit(.throttle(throttle))]),
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.throttle(throttle))),
             clock: clock
         ) {
             model.value
@@ -1108,7 +1110,7 @@ final class ObservationBridgeTests {
             mode: .earliest
         )
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.rateLimit(.throttle(throttle))]),
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.throttle(throttle))),
             clock: clock
         ) {
             model.value
@@ -1143,7 +1145,7 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = makeObservationBridgeStream(
-            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.debounce(debounce))),
             clock: clock
         ) {
             model.value
@@ -1172,7 +1174,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let observations = model.observeTask(\.parity, options: []) { value in
+        let observations = model.observeTask(\.parity, options: ObservationOptions()) { value in
             await queue.push(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1192,7 +1194,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observe(\.value, options: []) {
+        let observations = model.observe(\.value, options: ObservationOptions()) {
             recorder.append(1)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1211,7 +1213,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let observations = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: ObservationOptions()) {
             await queue.push(1)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1234,7 +1236,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: ObservationOptions()) { value in
             recorder.append(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1251,7 +1253,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
             recorder.append(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1271,7 +1273,7 @@ final class ObservationBridgeTests {
             let model = CounterModel()
             model.value = iteration
 
-            let observations = model.observeTask(\.value, options: []) { value in
+            let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
                 recorder.append(value)
             }.storedForTest()
 
@@ -1291,7 +1293,7 @@ final class ObservationBridgeTests {
             let started = ValueQueue<Int>()
             let cancelled = ValueQueue<Int>()
 
-            let observations = model.observeTask(\.value, options: []) { value in
+            let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
                 await started.push(value)
                 await withTaskCancellationHandler {
                     while !Task.isCancelled {
@@ -1327,7 +1329,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observe(
             \.value,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             recorder.append(value)
@@ -1350,7 +1352,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observe(
             \.value,
-            options: [.rateLimit(.throttle(throttle))],
+            options: .rateLimit(.throttle(throttle)),
             clock: clock
         ) { value in
             recorder.append(value)
@@ -1373,7 +1375,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.throttle(throttle))],
+            options: .rateLimit(.throttle(throttle)),
             clock: clock
         ) { value in
             recorder.append(value)
@@ -1393,7 +1395,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observe(
             \.value,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             recorder.append(value)
@@ -1413,7 +1415,7 @@ final class ObservationBridgeTests {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int?>()
 
-        let observations = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: ObservationOptions()) { value in
             recorder.append(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1442,7 +1444,7 @@ final class ObservationBridgeTests {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: ObservationOptions()) {
             recorder.append(1)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1473,7 +1475,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1505,7 +1507,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1544,7 +1546,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1574,7 +1576,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.throttle(throttle))],
+            options: .rateLimit(.throttle(throttle)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1609,7 +1611,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.throttle(throttle))],
+            options: .rateLimit(.throttle(throttle)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1640,7 +1642,7 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let observations = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: ObservationOptions()) { value in
             MainActor.assertIsolated()
             recorder.append(value)
         }.storedForTest()
@@ -1663,7 +1665,7 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let observations = model.observe(\.value, options: []) {
+        let observations = model.observe(\.value, options: ObservationOptions()) {
             MainActor.assertIsolated()
             recorder.append(1)
         }.storedForTest()
@@ -1688,7 +1690,7 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let observations = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
             MainActor.assertIsolated()
             await queue.push(value)
         }.storedForTest()
@@ -1712,7 +1714,7 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let observations = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: ObservationOptions()) {
             MainActor.assertIsolated()
             await queue.push(1)
         }.storedForTest()
@@ -1736,7 +1738,7 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let observations = model.observeTask(\.value, options: []) { @AlternateGlobalActor value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { @AlternateGlobalActor value in
             await queue.push(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -1766,7 +1768,7 @@ final class ObservationBridgeTests {
 
         let handle = observeImpl(
             owner: model,
-            options: [],
+            options: ObservationOptions(),
             rateLimit: nil,
             rateLimitClock: ContinuousClock(),
             isolation: callbackIsolation,
@@ -1793,7 +1795,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.parity,
-            options: [.rateLimit(.debounce(debounce))],
+            options: .rateLimit(.debounce(debounce)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1819,7 +1821,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.parity,
-            options: [.rateLimit(.throttle(throttle))],
+            options: .rateLimit(.throttle(throttle)),
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1977,207 +1979,43 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observationOptionsSetAlgebraPreservesRateLimitMetadata() {
+    func observationOptionsStoresRateLimitConfiguration() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(100),
             tolerance: .milliseconds(20),
             mode: .immediateFirst
         )
-
-        let debounceOnly: ObservationOptions = [.rateLimit(.debounce(debounce))]
-        #expect(debounceOnly.rateLimit == .debounce(debounce))
-
-        let sameDebounce = ObservationOptions.rateLimit(.debounce(debounce))
-        #expect(sameDebounce.rawValue == debounceOnly.rawValue)
-        #expect(sameDebounce == debounceOnly)
-        #expect(ObservationOptions.rateLimit(.debounce(debounce)) == sameDebounce)
-
-        let roundTrippedDebounce = ObservationOptions(rawValue: debounceOnly.rawValue)
-        #expect(roundTrippedDebounce.rateLimit == .debounce(debounce))
-
-        let tombstonedRemoveDuplicatesBit: UInt64 = 1 << 0
-        let tombstonedOnly = ObservationOptions(rawValue: tombstonedRemoveDuplicatesBit)
-        #expect(tombstonedOnly == ObservationOptions())
-        #expect(tombstonedOnly.rawValue == 0)
-
-        let tombstonedDebounce = ObservationOptions(rawValue: tombstonedRemoveDuplicatesBit | debounceOnly.rawValue)
-        #expect(tombstonedDebounce == debounceOnly)
-        #expect(tombstonedDebounce.rawValue == debounceOnly.rawValue)
-
-        let withLegacy: ObservationOptions
-        if #available(iOS 26.0, macOS 26.0, *) {
-            let legacyOnly: ObservationOptions = [.legacyBackend]
-            #expect(legacyOnly.contains(.legacyBackend))
-
-            withLegacy = debounceOnly.union(legacyOnly)
-            #expect(withLegacy.contains(.legacyBackend))
-            #expect(withLegacy.rateLimit == .debounce(debounce))
-
-            let legacyRoundTrip = ObservationOptions(rawValue: withLegacy.rawValue)
-            #expect(legacyRoundTrip.contains(.legacyBackend))
-            #expect(legacyRoundTrip.rateLimit == .debounce(debounce))
-
-            let withoutLegacy = withLegacy.subtracting([.legacyBackend])
-            #expect(!withoutLegacy.contains(.legacyBackend))
-            #expect(withoutLegacy.rateLimit == .debounce(debounce))
-        } else {
-            withLegacy = debounceOnly
-        }
-
-        let otherDebounce = ObservationDebounce(interval: .milliseconds(150), mode: .delayedFirst)
-        #expect(!withLegacy.contains(.rateLimit(.debounce(otherDebounce))))
-
-        var unchanged = withLegacy
-        let removedDifferentDebounce = unchanged.remove(.rateLimit(.debounce(otherDebounce)))
-        #expect(removedDifferentDebounce == nil)
-        #expect(unchanged.rateLimit == .debounce(debounce))
-
-        let a = ObservationOptions.rateLimit(.debounce(debounce))
-        let b = ObservationOptions.rateLimit(.debounce(otherDebounce))
-        let conflictingUnionAB = a.union(b)
-        let conflictingUnionBA = b.union(a)
-        #expect(conflictingUnionAB == conflictingUnionBA)
-        #expect(conflictingUnionAB.hasRateLimitConflict)
-        #expect(!a.hasRateLimitConflict)
-        #expect(!b.hasRateLimitConflict)
-        #expect(conflictingUnionAB.rateLimit == nil)
-        #expect(!conflictingUnionAB.contains(a))
-        #expect(!conflictingUnionAB.contains(b))
-
-        let literalMerged: ObservationOptions = [
-            .rateLimit(.debounce(debounce)),
-            .rateLimit(.debounce(otherDebounce)),
-        ]
-        #expect(literalMerged.hasRateLimitConflict)
-        #expect(literalMerged.rateLimit == nil)
-        #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
-
-        let subtractSpecificFromConflict = literalMerged.subtracting([.rateLimit(.debounce(debounce))])
-        #expect(subtractSpecificFromConflict == literalMerged)
-
-        let clearedConflict = literalMerged.subtracting(literalMerged)
-        #expect(clearedConflict == ObservationOptions())
-
-        let thirdDebounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-        let c = ObservationOptions.rateLimit(.debounce(thirdDebounce))
-        let mergedLeftAssociative = a.union(b).union(c)
-        let mergedRightAssociative = a.union(b.union(c))
-        #expect(mergedLeftAssociative == mergedRightAssociative)
-        #expect(mergedLeftAssociative.rateLimit == nil)
-        #expect(!mergedLeftAssociative.contains(c))
-
-        let symmetricAB = a.symmetricDifference(b)
-        let symmetricBA = b.symmetricDifference(a)
-        #expect(symmetricAB == symmetricBA)
-        #expect(symmetricAB.rateLimit == nil)
-
-        let intersected = withLegacy.intersection([.rateLimit(.debounce(debounce))])
-        #expect(intersected.rateLimit == .debounce(debounce))
-
-        let clearedDebounce = withLegacy.subtracting([.rateLimit(.debounce(debounce))])
-        #expect(clearedDebounce.rateLimit == nil)
-
         let throttle = ObservationThrottle(
             interval: .milliseconds(120),
             mode: .earliest
         )
-        let throttleOnly: ObservationOptions = [.rateLimit(.throttle(throttle))]
-        #expect(throttleOnly.rateLimit == .throttle(throttle))
 
-        let sameThrottle = ObservationOptions.rateLimit(.throttle(throttle))
-        #expect(sameThrottle == throttleOnly)
-        #expect(ObservationOptions.rateLimit(.throttle(throttle)) == sameThrottle)
+        let debounceOptions = ObservationOptions.rateLimit(.debounce(debounce))
+        #expect(debounceOptions.rateLimit == .debounce(debounce))
+        #expect(debounceOptions.backend == .automatic)
+        #expect(debounceOptions == ObservationOptions(rateLimit: .debounce(debounce)))
 
-        let roundTrippedThrottle = ObservationOptions(rawValue: throttleOnly.rawValue)
-        #expect(roundTrippedThrottle.rateLimit == .throttle(throttle))
-
-        let mixedConflict = debounceOnly.union(throttleOnly)
-        #expect(mixedConflict.hasRateLimitConflict)
-        #expect(mixedConflict.rateLimit == nil)
-        #expect(!mixedConflict.contains(debounceOnly))
-        #expect(!mixedConflict.contains(throttleOnly))
-
-        let literalMixedConflict: ObservationOptions = [
-            .rateLimit(.debounce(debounce)),
-            .rateLimit(.throttle(throttle)),
-        ]
-        #expect(literalMixedConflict.hasRateLimitConflict)
-        #expect(literalMixedConflict.rateLimit == nil)
-        #expect(literalMixedConflict == ObservationOptions(rawValue: literalMixedConflict.rawValue))
+        let throttleOptions = ObservationOptions.rateLimit(.throttle(throttle))
+        #expect(throttleOptions.rateLimit == .throttle(throttle))
+        #expect(throttleOptions.backend == .automatic)
+        #expect(throttleOptions == ObservationOptions(rateLimit: .throttle(throttle)))
     }
 
     @Test
-    func observationOptionsDebounceNormalizesSubmillisecondDurations() {
-        let submillisecondDebounce = ObservationDebounce(
-            interval: .microseconds(1_400),
-            tolerance: .microseconds(1_600),
-            mode: .delayedFirst
-        )
-        let canonicalDebounce = ObservationDebounce(
-            interval: .milliseconds(1),
-            tolerance: .milliseconds(2),
-            mode: .delayedFirst
-        )
-
-        let submillisecondOptions = ObservationOptions.rateLimit(.debounce(submillisecondDebounce))
-        let canonicalOptions: ObservationOptions = [.rateLimit(.debounce(canonicalDebounce))]
-
-        #expect(submillisecondOptions.rateLimit == .debounce(canonicalDebounce))
-        #expect(submillisecondOptions.contains(canonicalOptions))
-        #expect(canonicalOptions.contains(submillisecondOptions))
-        #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
-    }
-
-    @Test
-    func observationOptionsThrottleNormalizesSubmillisecondDurations() {
-        let submillisecondThrottle = ObservationThrottle(
-            interval: .microseconds(1_400),
-            mode: .earliest
-        )
-        let canonicalThrottle = ObservationThrottle(
-            interval: .milliseconds(1),
-            mode: .earliest
-        )
-
-        let submillisecondOptions = ObservationOptions.rateLimit(.throttle(submillisecondThrottle))
-        let canonicalOptions: ObservationOptions = [.rateLimit(.throttle(canonicalThrottle))]
-
-        #expect(submillisecondOptions.rateLimit == .throttle(canonicalThrottle))
-        #expect(submillisecondOptions.contains(canonicalOptions))
-        #expect(canonicalOptions.contains(submillisecondOptions))
-        #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
-    }
-
-    @Test
-    func observationOptionsRawValueCanonicalizesLegacyDebounceEncoding() {
-        let legacyRawValue: UInt64 = (1 << 1) | (1 << 2) | (1 << 3) | (100 << 4) | (20 << 32)
-        let expectedDebounce = ObservationDebounce(
-            interval: .milliseconds(100),
-            tolerance: .milliseconds(20),
-            mode: .delayedFirst
-        )
-        let canonical = ObservationOptions.rateLimit(.debounce(expectedDebounce))
-
-        let options = ObservationOptions(rawValue: legacyRawValue)
-        #expect(options.rateLimit == .debounce(expectedDebounce))
-        #expect(options.rawValue == canonical.rawValue)
-        #expect(options.rawValue != legacyRawValue)
-    }
-
-    @available(*, deprecated, message: "Compatibility coverage for deprecated debounce sugar.")
-    @Test
-    func observationOptionsDeprecatedDebounceSugarRemainsEquivalentToRateLimit() {
+    func observationOptionsCanCombineRateLimitAndLegacyBackend() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(80),
             tolerance: .milliseconds(10),
-            mode: .immediateFirst
+            mode: .delayedFirst
         )
-        let deprecatedOptions = ObservationOptions.debounce(debounce)
-        let canonicalOptions = ObservationOptions.rateLimit(.debounce(debounce))
+        let options = ObservationOptions(
+            rateLimit: .debounce(debounce),
+            backend: .legacy
+        )
 
-        #expect(deprecatedOptions == canonicalOptions)
-        #expect(deprecatedOptions.rawValue == canonicalOptions.rawValue)
-        #expect(deprecatedOptions.debounce == debounce)
+        #expect(options.rateLimit == .debounce(debounce))
+        #expect(options.backend == .legacy)
+        #expect(options.forcesLegacyBackend)
     }
 
     @Test
@@ -2188,7 +2026,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             [\.value, \.isEnabled],
-            options: [.rateLimit(.debounce(debounce))]
+            options: .rateLimit(.debounce(debounce))
         ) {
             recorder.append(1)
         }.storedForTest()
@@ -2210,7 +2048,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observeTask([\.value, \.isEnabled], options: []) {
+        let observations = model.observeTask([\.value, \.isEnabled], options: ObservationOptions()) {
             recorder.append(1)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -2230,7 +2068,7 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let observations = model.observe([\.value, \.isEnabled], options: []) {
+        let observations = model.observe([\.value, \.isEnabled], options: ObservationOptions()) {
             recorder.append(1)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -2248,7 +2086,7 @@ final class ObservationBridgeTests {
     func observeTaskRegistrationWithoutStoreDoesNotStartObservation() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-        _ = model.observeTask(\.value, options: []) { value in
+        _ = model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }
 
@@ -2264,7 +2102,7 @@ final class ObservationBridgeTests {
         do {
             let model = CounterModel()
             weakModel = model
-            registration = model.observeTask(\.value, options: []) { _ in }
+            registration = model.observeTask(\.value, options: ObservationOptions()) { _ in }
         }
 
         withExtendedLifetime(registration) {
@@ -2279,7 +2117,7 @@ final class ObservationBridgeTests {
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }
         .store(in: observations)
@@ -2296,7 +2134,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
         let observations = ObservationScope()
 
-        model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }
         .store(in: observations)
@@ -2316,7 +2154,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
         let observations = ObservationScope()
 
-        model.observeTask(\.value, id: "value", options: []) { value in
+        model.observeTask(\.value, id: "value", options: ObservationOptions()) { value in
             await queue.push(value)
         }.store(in: observations)
 
@@ -2340,7 +2178,7 @@ final class ObservationBridgeTests {
             secondScope.cancelAll()
         }
 
-        let registration = model.observeTask(\.value, options: []) { value in
+        let registration = model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }
 
@@ -2367,7 +2205,7 @@ final class ObservationBridgeTests {
         let holder = ObservationScopeCancellationProbe()
         let recorder = ValueRecorder<Int>()
 
-        model.observe(\.value, id: "value", options: []) { value in
+        model.observe(\.value, id: "value", options: ObservationOptions()) { value in
             recorder.append(value)
             holder.cancel(id: "value")
         }.store(in: holder.observations)
@@ -2389,13 +2227,13 @@ final class ObservationBridgeTests {
         let holder = ObservationScopeCancellationProbe()
         let recorder = ValueRecorder<Int>()
 
-        model.observe(\.value, id: "value", options: []) { value in
+        model.observe(\.value, id: "value", options: ObservationOptions()) { value in
             recorder.append(value)
         }.store(in: holder.observations)
 
         #expect(recorder.snapshot() == [0])
 
-        model.observe(\.secondaryValue, id: "value", options: []) { value in
+        model.observe(\.secondaryValue, id: "value", options: ObservationOptions()) { value in
             recorder.append(100 + value)
             holder.cancel(id: "value")
         }.store(in: holder.observations)
@@ -2419,7 +2257,7 @@ final class ObservationBridgeTests {
         let recorder = ValueRecorder<Int>()
         let didReenter = Mutex(false)
 
-        model.observe(\.value, id: "value", options: []) { value in
+        model.observe(\.value, id: "value", options: ObservationOptions()) { value in
             recorder.append(value)
 
             let shouldReenter = didReenter.withLock { didReenter in
@@ -2431,7 +2269,7 @@ final class ObservationBridgeTests {
             }
 
             if shouldReenter {
-                model.observe(\.value, id: "value", options: []) { value in
+                model.observe(\.value, id: "value", options: ObservationOptions()) { value in
                     recorder.append(100 + value)
                 }.store(in: holder.observations)
             }
@@ -2454,7 +2292,7 @@ final class ObservationBridgeTests {
         let holder = ObservationScopeCancellationProbe()
         let recorder = ValueRecorder<Int>()
 
-        model.observe(\.value, id: "value", options: []) { value in
+        model.observe(\.value, id: "value", options: ObservationOptions()) { value in
             recorder.append(value)
             holder.observations.update {}
         }.store(in: holder.observations)
@@ -2477,12 +2315,12 @@ final class ObservationBridgeTests {
         let recorder = ValueRecorder<Int>()
 
         holder.observations.update {
-            model.observe(\.value, id: "first", options: []) { value in
+            model.observe(\.value, id: "first", options: ObservationOptions()) { value in
                 recorder.append(value)
                 holder.cancel(id: "second")
             }.store(in: holder.observations)
 
-            model.observe(\.secondaryValue, id: "second", options: []) { value in
+            model.observe(\.secondaryValue, id: "second", options: ObservationOptions()) { value in
                 recorder.append(100 + value)
             }.store(in: holder.observations)
         }
@@ -2503,13 +2341,13 @@ final class ObservationBridgeTests {
         let recorder = ValueRecorder<Int>()
 
         holder.observations.update {
-            model.observe(\.value, id: "first", options: []) { _ in
-                model.observe(\.secondaryValue, id: "second", options: []) { value in
+            model.observe(\.value, id: "first", options: ObservationOptions()) { _ in
+                model.observe(\.secondaryValue, id: "second", options: ObservationOptions()) { value in
                     recorder.append(200 + value)
                 }.store(in: holder.observations)
             }.store(in: holder.observations)
 
-            model.observe(\.secondaryValue, id: "second", options: []) { value in
+            model.observe(\.secondaryValue, id: "second", options: ObservationOptions()) { value in
                 recorder.append(100 + value)
             }.store(in: holder.observations)
         }
@@ -2531,7 +2369,7 @@ final class ObservationBridgeTests {
         let holder = ObservationScopeCancellationProbe()
         let recorder = ValueRecorder<Int>()
 
-        model.observe(\.value, options: []) { value in
+        model.observe(\.value, options: ObservationOptions()) { value in
             recorder.append(value)
             holder.cancelAll()
         }.store(in: holder.observations)
@@ -2556,7 +2394,7 @@ final class ObservationBridgeTests {
 
         func bind() {
             observations.update {
-                model.observeTask(\.value, options: []) { value in
+                model.observeTask(\.value, options: ObservationOptions()) { value in
                     await started.push(value)
                     await withTaskCancellationHandler {
                         await gate.wait(for: value)
@@ -2596,7 +2434,7 @@ final class ObservationBridgeTests {
 
         func bind() {
             observations.update {
-                model.observeTask(makeKeyPath(), options: []) { value in
+                model.observeTask(makeKeyPath(), options: ObservationOptions()) { value in
                     await started.push(value)
                     await withTaskCancellationHandler {
                         await gate.wait(for: value)
@@ -2633,7 +2471,7 @@ final class ObservationBridgeTests {
         func bind() {
             let targetQueue = usesSecondQueue ? secondQueue : firstQueue
             observations.update {
-                model.observeTask(\.value, options: []) { value in
+                model.observeTask(\.value, options: ObservationOptions()) { value in
                     await targetQueue.push(value)
                 }.store(in: observations)
             }
@@ -2657,7 +2495,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
 
         observations.update {
-            model.observeTask(\.value, options: []) { value in
+            model.observeTask(\.value, options: ObservationOptions()) { value in
                 await queue.push(value)
             }.store(in: observations)
         }
@@ -2681,11 +2519,11 @@ final class ObservationBridgeTests {
         }
 
         observations.update {
-            model.observeTask(\.value, id: "value", options: []) { value in
+            model.observeTask(\.value, id: "value", options: ObservationOptions()) { value in
                 await firstQueue.push(value)
             }.store(in: observations)
 
-            model.observeTask(\.value, id: "value", options: []) { value in
+            model.observeTask(\.value, id: "value", options: ObservationOptions()) { value in
                 await secondQueue.push(value)
             }.store(in: observations)
         }
@@ -2701,7 +2539,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
 
         observations.update {
-            model.observeTask(\.value, id: "value", options: []) { value in
+            model.observeTask(\.value, id: "value", options: ObservationOptions()) { value in
                 await queue.push(value)
             }.store(in: observations)
 
@@ -2720,7 +2558,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
 
         observations.update {
-            model.observeTask(\.value, id: "value", options: []) { value in
+            model.observeTask(\.value, id: "value", options: ObservationOptions()) { value in
                 await queue.push(value)
             }.store(in: observations)
 
@@ -2745,7 +2583,7 @@ final class ObservationBridgeTests {
         }
 
         observations.update {
-            model.observeTask(\.value, id: "counter", options: []) { value in
+            model.observeTask(\.value, id: "counter", options: ObservationOptions()) { value in
                 await firstStarted.push(value)
                 await withTaskCancellationHandler {
                     await gate.wait(for: value)
@@ -2760,7 +2598,7 @@ final class ObservationBridgeTests {
         #expect(await nextWithTimeout(from: firstStarted) == 0)
 
         observations.update {
-            model.observeTask(\.secondaryValue, id: "counter", options: []) { value in
+            model.observeTask(\.secondaryValue, id: "counter", options: ObservationOptions()) { value in
                 await secondStarted.push(value)
             }.store(in: observations)
         }
@@ -2778,7 +2616,7 @@ final class ObservationBridgeTests {
         let firstQueue = ValueQueue<Int>()
         let secondQueue = ValueQueue<Int>()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
-        let options: ObservationOptions = [.rateLimit(.debounce(debounce))]
+        let options: ObservationOptions = .rateLimit(.debounce(debounce))
         defer {
             observations.cancelAll()
         }
@@ -2820,7 +2658,7 @@ final class ObservationBridgeTests {
         let firstDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
-            options: [],
+            options: ObservationOptions(),
             clock: ContinuousClock(),
             isolation: firstIsolation,
             callbackIsolation: nil,
@@ -2830,7 +2668,7 @@ final class ObservationBridgeTests {
         let equivalentDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
-            options: [],
+            options: ObservationOptions(),
             clock: ContinuousClock(),
             isolation: firstIsolation,
             callbackIsolation: nil,
@@ -2840,7 +2678,7 @@ final class ObservationBridgeTests {
         let changedIsolationDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
-            options: [],
+            options: ObservationOptions(),
             clock: ContinuousClock(),
             isolation: secondIsolation,
             callbackIsolation: nil,
@@ -2850,7 +2688,7 @@ final class ObservationBridgeTests {
         let observeDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
-            options: [],
+            options: ObservationOptions(),
             clock: ContinuousClock(),
             isolation: firstIsolation,
             callbackIsolation: nil,
@@ -2860,7 +2698,7 @@ final class ObservationBridgeTests {
         let changedCallbackIsolationDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
-            options: [],
+            options: ObservationOptions(),
             clock: ContinuousClock(),
             isolation: firstIsolation,
             callbackIsolation: secondIsolation,
@@ -2877,7 +2715,7 @@ final class ObservationBridgeTests {
     func observationScopeDescriptorTracksValueClockChanges() {
         let model = CounterModel()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
-        let options: ObservationOptions = [.rateLimit(.debounce(debounce))]
+        let options: ObservationOptions = .rateLimit(.debounce(debounce))
         let firstDescriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: model,
             keyPath: \.value,
@@ -2930,7 +2768,7 @@ final class ObservationBridgeTests {
             }
             weakModel = model
 
-            model.observe(\.value, options: []) { value in
+            model.observe(\.value, options: ObservationOptions()) { value in
                 values.append(value)
             }
             .store(in: observations)
@@ -2981,7 +2819,7 @@ final class ObservationBridgeTests {
             }
             weakCapture = capture
 
-            model.observe(\.value, options: []) { [capture] value in
+            model.observe(\.value, options: ObservationOptions()) { [capture] value in
                 capture.record(value)
             }.store(in: observations)
         }
@@ -3023,7 +2861,7 @@ final class ObservationBridgeTests {
             }
             weakModel = model
 
-            model.observeTask(\.value, options: []) { value in
+            model.observeTask(\.value, options: ObservationOptions()) { value in
                 await started.push(value)
                 await withTaskCancellationHandler {
                     await gate.wait(for: value)
@@ -3070,12 +2908,12 @@ final class ObservationBridgeTests {
             let holder = MainActorObservationScopeHolder()
             weakHolder = holder
 
-            model.observe(\.value, options: []) { value in
+            model.observe(\.value, options: ObservationOptions()) { value in
                 observedValues.append(value)
             }
             .store(in: holder.observations)
 
-            model.observeTask(\.value, options: []) { value in
+            model.observeTask(\.value, options: ObservationOptions()) { value in
                 observedTaskValues.append(value)
             }
             .store(in: holder.observations)
@@ -3109,7 +2947,7 @@ final class ObservationBridgeTests {
         let queue = ValueQueue<Int>()
         let observations = ObservationScope()
 
-        model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }.store(in: observations)
 
@@ -3130,7 +2968,7 @@ final class ObservationBridgeTests {
         let gate = OperationGate()
         let observations = ObservationScope()
 
-        model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: ObservationOptions()) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -3157,7 +2995,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let observations = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -3204,7 +3042,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let observations = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -3258,7 +3096,7 @@ final class ObservationBridgeTests {
 
         let observations = model.observeTask(
             \.value,
-            options: [.rateLimit(.debounce(debounce))]
+            options: .rateLimit(.debounce(debounce))
         ) { value in
             await started.push(value)
             await withTaskCancellationHandler {
@@ -3301,7 +3139,7 @@ final class ObservationBridgeTests {
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 
-        let observations = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
             await queue.push(value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -3330,7 +3168,7 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let observations = model.observe(\.payload, options: []) { payload in
+        let observations = model.observe(\.payload, options: ObservationOptions()) { payload in
             MainActor.assertIsolated()
             observedValues.append(payload.value)
         }.storedForTest()
@@ -3350,7 +3188,7 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let observations = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: ObservationOptions()) { payload in
             MainActor.assertIsolated()
             observedValues.append(payload.value)
         }.storedForTest()
@@ -3370,7 +3208,7 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let observations = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: ObservationOptions()) { payload in
             observedValues.append(payload.value)
         }.storedForTest()
         defer { observations.cancelAll() }
@@ -3396,7 +3234,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let observations = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: ObservationOptions()) { payload in
             let payloadValue = payload.value
             await started.push(payloadValue)
             await withTaskCancellationHandler {
@@ -3449,7 +3287,7 @@ final class ObservationBridgeTests {
         let gate = OperationGate()
         let observations = ObservationScope()
 
-        model.observeTask(\.payload, options: []) { payload in
+        model.observeTask(\.payload, options: ObservationOptions()) { payload in
             let payloadValue = payload.value
             await started.push(payloadValue)
             await withTaskCancellationHandler {
@@ -3518,7 +3356,7 @@ final class ObservationBridgeTests {
             }
             weakModel = model
 
-            model.observeTask(\.value, options: []) {
+            model.observeTask(\.value, options: ObservationOptions()) {
             }.store(in: observations)
         }
 
@@ -3564,7 +3402,7 @@ final class ObservationBridgeStressTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, observations, onObserved in
-            model.observeTask(\.value, options: []) { value in
+            model.observeTask(\.value, options: ObservationOptions()) { value in
                 onObserved(value)
             }.store(in: observations)
         }
@@ -3592,12 +3430,12 @@ final class ObservationBridgeStressTests {
                 let holder = MainActorObservationScopeHolder()
                 weakHolder = holder
 
-                model.observe(\.value, options: []) { _ in
+                model.observe(\.value, options: ObservationOptions()) { _ in
                     observeCount += 1
                 }
                 .store(in: holder.observations)
 
-                model.observeTask(\.value, options: []) { _ in
+                model.observeTask(\.value, options: ObservationOptions()) { _ in
                     observeTaskCount += 1
                 }
                 .store(in: holder.observations)

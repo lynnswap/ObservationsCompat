@@ -326,7 +326,7 @@ enum ObservationScopeKind: Hashable {
 struct ObservationScopeDescriptor: Equatable {
     let ownerID: ObjectIdentifier
     let keyPaths: [AnyKeyPath]
-    let optionsRawValue: UInt64
+    let options: ObservationOptions
     let clockIdentity: ObservationScopeClockIdentity?
     let isolationID: ObjectIdentifier?
     let callbackIsolationID: ObjectIdentifier?
@@ -346,7 +346,7 @@ struct ObservationScopeDescriptor: Equatable {
         ObservationScopeDescriptor(
             ownerID: ObjectIdentifier(owner),
             keyPaths: [keyPath],
-            optionsRawValue: options.rawValue,
+            options: options,
             clockIdentity: clockIdentity(for: clock, options: options),
             isolationID: actorID(isolation),
             callbackIsolationID: actorID(callbackIsolation),
@@ -367,7 +367,7 @@ struct ObservationScopeDescriptor: Equatable {
         ObservationScopeDescriptor(
             ownerID: ObjectIdentifier(owner),
             keyPaths: keyPaths,
-            optionsRawValue: options.rawValue,
+            options: options,
             clockIdentity: clockIdentity(for: clock, options: options),
             isolationID: actorID(isolation),
             callbackIsolationID: actorID(callbackIsolation),
@@ -428,7 +428,7 @@ private struct ObservationScopeAutomaticID: Hashable {
     let column: UInt
     let ownerID: ObjectIdentifier
     let keyPaths: [AnyKeyPath]
-    let optionsRawValue: UInt64
+    let options: ObservationOptions
     let isolationID: ObjectIdentifier?
     let callbackIsolationID: ObjectIdentifier?
     let kind: ObservationScopeKind
@@ -453,7 +453,7 @@ private func observationScopeResolvedID(
             column: column,
             ownerID: descriptor.ownerID,
             keyPaths: descriptor.keyPaths,
-            optionsRawValue: descriptor.optionsRawValue,
+            options: descriptor.options,
             isolationID: descriptor.isolationID,
             callbackIsolationID: descriptor.callbackIsolationID,
             kind: descriptor.kind,

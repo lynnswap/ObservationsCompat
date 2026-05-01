@@ -61,6 +61,7 @@ If you need derived state from multiple key paths, use trigger-only observation 
 
 Available options:
 
+- `ObservationOptions(rateLimit:backend:)`: explicit full configuration.
 - `.rateLimit(ObservationRateLimit)`: explicit rate-limit configuration (`.debounce(...)` / `.throttle(...)`).
 - `.legacyBackend` (`iOS 26.0+` / `macOS 26.0+`): forces legacy `withObservationTracking` backend even on modern OS.
 - `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
@@ -68,7 +69,7 @@ Available options:
 
 Rate-limit notes:
 
-- `debounce` and `throttle` are mutually exclusive; combining different rate-limit options is a configuration conflict.
+- `debounce` and `throttle` are mutually exclusive because `ObservationOptions` stores one optional rate-limit value.
 - `throttle(mode: .latest)` is the default and means: emit the first value immediately, then emit the latest value seen during each interval.
 - `throttle(mode: .earliest)` emits the first value seen during each interval after the initial immediate emission.
 - If you need duplicate suppression, implement it explicitly at the call site.
@@ -84,7 +85,7 @@ let clock = MyTestClock() // your Clock implementation for tests
 let throttle = ObservationThrottle(interval: .milliseconds(250))
 
 let stream = ObservationBridge(
-    options: [.rateLimit(.throttle(throttle))],
+    options: .rateLimit(.throttle(throttle)),
     clock: clock
 ) {
     model.count
@@ -184,6 +185,8 @@ Backend behavior note:
 - `observe` / `observeTask` now return `ObservationRegistration` and no longer start observation until `.store(in:)` is called.
 - `ObservationScope` is the lifecycle owner for callback observations.
 - `ObservationHandle`, direct `cancel()`, `Set<ObservationHandle>`, and `.store(in: &set)` have been removed from the public API.
+- `ObservationOptions` is no longer an `OptionSet`; use `.rateLimit(...)`, `.legacyBackend`, or `ObservationOptions(rateLimit:backend:)`.
+- `ObservationOptions(rawValue:)`, array-literal merging, and set-algebra APIs have been removed.
 - Replace handle storage with `ObservationScope`:
 
 Before:
@@ -243,8 +246,8 @@ This is an intentional API reduction. Multi-keypath observers now only tell you 
 
 ### v0.6.0
 
-- `.debounce(ObservationDebounce)` is deprecated; use `.rateLimit(.debounce(...))` instead.
-- Inspect `options.rateLimit` instead of relying on the deprecated `options.debounce` convenience accessor.
+- `.debounce(ObservationDebounce)` was deprecated; v0.8.0 removes it. Use `.rateLimit(.debounce(...))` instead.
+- Inspect `options.rateLimit` instead of relying on the removed `options.debounce` convenience accessor.
 
 ### v0.5.0
 

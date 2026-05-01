@@ -45,435 +45,32 @@ public enum ObservationRateLimit: Sendable, Hashable {
     case throttle(ObservationThrottle)
 }
 
-public struct ObservationOptions: OptionSet, Sendable {
-    // Tombstone for the removed `.removeDuplicates` option. Keep the bit reserved so
-    // `ObservationOptions(rawValue:)` can safely canonicalize older serialized values.
-    private static let removedRemoveDuplicatesFlag: UInt64 = 1 << 0
-    private static let rateLimitFlag: UInt64 = 1 << 1
-    private static let rateLimitModeFlag: UInt64 = 1 << 2
-    private static let rateLimitTolerancePresentFlag: UInt64 = 1 << 3
-    private static let conflictingRateLimitFlag: UInt64 = 1 << 60
-    private static let legacyBackendFlag: UInt64 = 1 << 61
-    private static let rateLimitEncodingVersionFlag: UInt64 = 1 << 62
-    private static let rateLimitKindThrottleFlag: UInt64 = 1 << 63
-    private static let rateLimitPayloadBitWidth: UInt64 = 28
-    private static let rateLimitIntervalShift: UInt64 = 4
-    private static let rateLimitToleranceShift: UInt64 = rateLimitIntervalShift + rateLimitPayloadBitWidth
-    private static let rateLimitPayloadMask: UInt64 = (1 << rateLimitPayloadBitWidth) - 1
-    private static let rateLimitIntervalMask: UInt64 = rateLimitPayloadMask << rateLimitIntervalShift
-    private static let rateLimitToleranceMask: UInt64 = rateLimitPayloadMask << rateLimitToleranceShift
-    private static let legacyDebounceFlag = rateLimitFlag
-    private static let legacyDelayedFirstFlag: UInt64 = 1 << 2
-    private static let legacyTolerancePresentFlag: UInt64 = 1 << 3
-    private static let legacyDebounceIntervalShift: UInt64 = 4
-    private static let legacyDebounceToleranceShift: UInt64 = legacyDebounceIntervalShift + rateLimitPayloadBitWidth
-    private static let legacyDebounceIntervalMask: UInt64 = rateLimitPayloadMask << legacyDebounceIntervalShift
-    private static let legacyDebounceToleranceMask: UInt64 = rateLimitPayloadMask << legacyDebounceToleranceShift
-    private static let membershipMask: UInt64 = rateLimitFlag | legacyBackendFlag
+public enum ObservationBackend: Sendable, Hashable {
+    case automatic
+    case legacy
+}
 
-    public let rawValue: UInt64
-    private let rateLimitConfiguration: ObservationRateLimit?
-    private let hasConflictingRateLimit: Bool
+public struct ObservationOptions: Sendable, Hashable {
+    public let rateLimit: ObservationRateLimit?
+    public let backend: ObservationBackend
 
-    public init() {
-        rawValue = 0
-        rateLimitConfiguration = nil
-        hasConflictingRateLimit = false
-    }
-
-    public init(rawValue: UInt64) {
-        _ = rawValue & Self.removedRemoveDuplicatesFlag
-        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0
-        let hasConflictingRateLimit = (rawValue & Self.conflictingRateLimitFlag) != 0
-        let rateLimitConfiguration = hasConflictingRateLimit ? nil : Self.decodeRateLimitConfiguration(from: rawValue)
-        self.rawValue = Self.encodeRawValue(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: rateLimitConfiguration,
-            hasConflictingRateLimit: hasConflictingRateLimit
-        )
-        self.rateLimitConfiguration = rateLimitConfiguration
-        self.hasConflictingRateLimit = hasConflictingRateLimit
-    }
-
-    private init(
-        usesLegacyBackend: Bool,
-        rateLimitConfiguration: ObservationRateLimit?,
-        hasConflictingRateLimit: Bool = false
+    public init(
+        rateLimit: ObservationRateLimit? = nil,
+        backend: ObservationBackend = .automatic
     ) {
-        let normalizedRateLimitConfiguration = hasConflictingRateLimit
-            ? nil
-            : Self.normalizeRateLimitConfiguration(rateLimitConfiguration)
-        self.rawValue = Self.encodeRawValue(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: normalizedRateLimitConfiguration,
-            hasConflictingRateLimit: hasConflictingRateLimit
-        )
-        self.rateLimitConfiguration = normalizedRateLimitConfiguration
-        self.hasConflictingRateLimit = hasConflictingRateLimit
-    }
-
-    public init(arrayLiteral elements: ObservationOptions...) {
-        var merged = ObservationOptions()
-        for element in elements {
-            merged.formUnion(element)
-        }
-        self = merged
+        self.rateLimit = rateLimit
+        self.backend = backend
     }
 
     @available(iOS 26.0, macOS 26.0, *)
-    public static let legacyBackend = ObservationOptions(rawValue: legacyBackendFlag)
+    public static let legacyBackend = ObservationOptions(backend: .legacy)
 
     public static func rateLimit(_ configuration: ObservationRateLimit) -> ObservationOptions {
-        ObservationOptions(usesLegacyBackend: false, rateLimitConfiguration: configuration)
-    }
-
-    @available(*, deprecated, message: "Use .rateLimit(.debounce(configuration)) instead.")
-    public static func debounce(_ configuration: ObservationDebounce) -> ObservationOptions {
-        rateLimit(.debounce(configuration))
-    }
-
-    public var rateLimit: ObservationRateLimit? {
-        rateLimitConfiguration
-    }
-
-    @available(*, deprecated, message: "Inspect options.rateLimit and pattern-match .debounce instead.")
-    public var debounce: ObservationDebounce? {
-        guard case let .debounce(configuration)? = rateLimitConfiguration else {
-            return nil
-        }
-        return configuration
-    }
-
-    var hasRateLimitConflict: Bool {
-        hasConflictingRateLimit
-    }
-
-    var rateLimitForObservation: ObservationRateLimit? {
-        guard !hasRateLimitConflict else {
-            preconditionFailure("Conflicting rate limit options are not supported when starting observation")
-        }
-        return rateLimitConfiguration
+        ObservationOptions(rateLimit: configuration)
     }
 
     var forcesLegacyBackend: Bool {
-        (rawValue & Self.legacyBackendFlag) != 0
-    }
-
-    public func contains(_ member: ObservationOptions) -> Bool {
-        let ownMembership = rawValue & Self.membershipMask
-        let memberMembership = member.rawValue & Self.membershipMask
-        guard (ownMembership & memberMembership) == memberMembership else {
-            return false
-        }
-        if member.hasConflictingRateLimit {
-            return hasConflictingRateLimit
-        }
-        guard let memberRateLimitConfiguration = member.rateLimitConfiguration else {
-            return true
-        }
-        return rateLimitConfiguration == memberRateLimitConfiguration
-    }
-
-    public func union(_ other: ObservationOptions) -> ObservationOptions {
-        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 || (other.rawValue & Self.legacyBackendFlag) != 0
-        let mergedRateLimit = Self.mergeRateLimit(
-            lhs: rateLimitConfiguration,
-            lhsConflicting: hasConflictingRateLimit,
-            rhs: other.rateLimitConfiguration,
-            rhsConflicting: other.hasConflictingRateLimit
-        )
-        return ObservationOptions(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: mergedRateLimit.configuration,
-            hasConflictingRateLimit: mergedRateLimit.hasConflict
-        )
-    }
-
-    public mutating func formUnion(_ other: ObservationOptions) {
-        self = union(other)
-    }
-
-    public func intersection(_ other: ObservationOptions) -> ObservationOptions {
-        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) != 0
-        let intersectedConflict = hasConflictingRateLimit && other.hasConflictingRateLimit
-        let intersectedRateLimit = intersectedConflict ? nil : (rateLimitConfiguration == other.rateLimitConfiguration ? rateLimitConfiguration : nil)
-        return ObservationOptions(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: intersectedRateLimit,
-            hasConflictingRateLimit: intersectedConflict
-        )
-    }
-
-    public mutating func formIntersection(_ other: ObservationOptions) {
-        self = intersection(other)
-    }
-
-    public func symmetricDifference(_ other: ObservationOptions) -> ObservationOptions {
-        let usesLegacyBackend = ((rawValue & Self.legacyBackendFlag) != 0) != ((other.rawValue & Self.legacyBackendFlag) != 0)
-        let resultingConflict = hasConflictingRateLimit != other.hasConflictingRateLimit
-        let resultingRateLimit: ObservationRateLimit?
-        if resultingConflict {
-            resultingRateLimit = nil
-        } else {
-            switch (rateLimitConfiguration, other.rateLimitConfiguration) {
-            case (nil, nil):
-                resultingRateLimit = nil
-            case let (lhs?, nil):
-                resultingRateLimit = lhs
-            case let (nil, rhs?):
-                resultingRateLimit = rhs
-            case (.some, .some):
-                resultingRateLimit = nil
-            }
-        }
-
-        return ObservationOptions(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: resultingRateLimit,
-            hasConflictingRateLimit: resultingConflict
-        )
-    }
-
-    public mutating func formSymmetricDifference(_ other: ObservationOptions) {
-        self = symmetricDifference(other)
-    }
-
-    public func subtracting(_ other: ObservationOptions) -> ObservationOptions {
-        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) == 0
-        let resultingConflict: Bool
-        let resultingRateLimit: ObservationRateLimit?
-        if hasConflictingRateLimit {
-            resultingConflict = !other.hasConflictingRateLimit
-            resultingRateLimit = nil
-        } else {
-            resultingConflict = false
-            resultingRateLimit = rateLimitConfiguration == other.rateLimitConfiguration ? nil : rateLimitConfiguration
-        }
-        return ObservationOptions(
-            usesLegacyBackend: usesLegacyBackend,
-            rateLimitConfiguration: resultingRateLimit,
-            hasConflictingRateLimit: resultingConflict
-        )
-    }
-
-    public mutating func subtract(_ other: ObservationOptions) {
-        self = subtracting(other)
-    }
-
-    @discardableResult
-    public mutating func insert(_ newMember: ObservationOptions) -> (inserted: Bool, memberAfterInsert: ObservationOptions) {
-        let oldMember = update(with: newMember)
-        return (oldMember == nil, oldMember ?? newMember)
-    }
-
-    @discardableResult
-    public mutating func remove(_ member: ObservationOptions) -> ObservationOptions? {
-        guard contains(member) else {
-            return nil
-        }
-        let removedMember = intersection(member)
-        self = subtracting(member)
-        return removedMember
-    }
-
-    @discardableResult
-    public mutating func update(with newMember: ObservationOptions) -> ObservationOptions? {
-        let oldMember = contains(newMember) ? intersection(newMember) : nil
-        self = union(newMember)
-        return oldMember
-    }
-
-    private static func encodeRawValue(
-        usesLegacyBackend: Bool,
-        rateLimitConfiguration: ObservationRateLimit?,
-        hasConflictingRateLimit: Bool
-    ) -> UInt64 {
-        var rawValue: UInt64 = 0
-        if usesLegacyBackend {
-            rawValue |= legacyBackendFlag
-        }
-        if hasConflictingRateLimit {
-            rawValue |= conflictingRateLimitFlag
-            return rawValue
-        }
-        guard let rateLimitConfiguration else {
-            return rawValue
-        }
-
-        rawValue |= rateLimitFlag
-        rawValue |= rateLimitEncodingVersionFlag
-        rawValue |= encodeRateLimitPayload(rateLimitConfiguration)
-        return rawValue
-    }
-
-    private static func decodeRateLimitConfiguration(from rawValue: UInt64) -> ObservationRateLimit? {
-        guard (rawValue & rateLimitFlag) != 0 else {
-            return nil
-        }
-
-        if (rawValue & rateLimitEncodingVersionFlag) == 0 {
-            return decodeLegacyDebounceConfiguration(from: rawValue).map(ObservationRateLimit.debounce)
-        }
-
-        let intervalMilliseconds = (rawValue & rateLimitIntervalMask) >> rateLimitIntervalShift
-        let interval = Duration.milliseconds(Int64(intervalMilliseconds))
-
-        if (rawValue & rateLimitKindThrottleFlag) != 0 {
-            let mode: ObservationThrottleMode = (rawValue & rateLimitModeFlag) != 0 ? .earliest : .latest
-            return .throttle(
-                ObservationThrottle(
-                    interval: interval,
-                    mode: mode
-                )
-            )
-        }
-
-        let mode: ObservationDebounceMode = (rawValue & rateLimitModeFlag) != 0 ? .delayedFirst : .immediateFirst
-        let tolerance: Duration?
-        if (rawValue & rateLimitTolerancePresentFlag) != 0 {
-            let toleranceMilliseconds = (rawValue & rateLimitToleranceMask) >> rateLimitToleranceShift
-            tolerance = .milliseconds(Int64(toleranceMilliseconds))
-        } else {
-            tolerance = nil
-        }
-
-        return .debounce(
-            ObservationDebounce(
-                interval: interval,
-                tolerance: tolerance,
-                mode: mode
-            )
-        )
-    }
-
-    private static func decodeLegacyDebounceConfiguration(from rawValue: UInt64) -> ObservationDebounce? {
-        guard (rawValue & legacyDebounceFlag) != 0 else {
-            return nil
-        }
-
-        let mode: ObservationDebounceMode = (rawValue & legacyDelayedFirstFlag) != 0 ? .delayedFirst : .immediateFirst
-        let intervalMilliseconds = (rawValue & legacyDebounceIntervalMask) >> legacyDebounceIntervalShift
-        let interval = Duration.milliseconds(Int64(intervalMilliseconds))
-
-        let tolerance: Duration?
-        if (rawValue & legacyTolerancePresentFlag) != 0 {
-            let toleranceMilliseconds = (rawValue & legacyDebounceToleranceMask) >> legacyDebounceToleranceShift
-            tolerance = .milliseconds(Int64(toleranceMilliseconds))
-        } else {
-            tolerance = nil
-        }
-
-        return ObservationDebounce(
-            interval: interval,
-            tolerance: tolerance,
-            mode: mode
-        )
-    }
-
-    private static func normalizeRateLimitConfiguration(_ rateLimitConfiguration: ObservationRateLimit?) -> ObservationRateLimit? {
-        guard let rateLimitConfiguration else {
-            return nil
-        }
-        let encodedRawValue = rateLimitFlag | rateLimitEncodingVersionFlag | encodeRateLimitPayload(rateLimitConfiguration)
-        return decodeRateLimitConfiguration(from: encodedRawValue)
-    }
-
-    private static func encodeRateLimitPayload(_ rateLimitConfiguration: ObservationRateLimit) -> UInt64 {
-        switch rateLimitConfiguration {
-        case let .debounce(debounceConfiguration):
-            let intervalMilliseconds = encodeMilliseconds(
-                debounceConfiguration.interval,
-                parameter: "interval"
-            )
-
-            var payload = intervalMilliseconds << rateLimitIntervalShift
-            if debounceConfiguration.mode == .delayedFirst {
-                payload |= rateLimitModeFlag
-            }
-
-            if let tolerance = debounceConfiguration.tolerance {
-                let toleranceMilliseconds = encodeMilliseconds(
-                    tolerance,
-                    parameter: "tolerance"
-                )
-                payload |= rateLimitTolerancePresentFlag
-                payload |= toleranceMilliseconds << rateLimitToleranceShift
-            }
-
-            return payload
-        case let .throttle(throttleConfiguration):
-            let intervalMilliseconds = encodeMilliseconds(
-                throttleConfiguration.interval,
-                parameter: "interval"
-            )
-
-            var payload = rateLimitKindThrottleFlag
-            payload |= intervalMilliseconds << rateLimitIntervalShift
-            if throttleConfiguration.mode == .earliest {
-                payload |= rateLimitModeFlag
-            }
-            return payload
-        }
-    }
-
-    private static func encodeMilliseconds(
-        _ duration: Duration,
-        parameter: String
-    ) -> UInt64 {
-        let components = duration.components
-        precondition(
-            components.seconds >= 0 && components.attoseconds >= 0,
-            "\(parameter) must be non-negative"
-        )
-
-        let attosecondsPerMillisecond: Int64 = 1_000_000_000_000_000
-        let (secondsMilliseconds, secondsOverflow) = UInt64(components.seconds).multipliedReportingOverflow(by: 1_000)
-        precondition(!secondsOverflow, "\(parameter) is too large to encode")
-
-        let attosecondsMilliseconds = UInt64(components.attoseconds / attosecondsPerMillisecond)
-        let remainderAttoseconds = UInt64(components.attoseconds % attosecondsPerMillisecond)
-        let roundedMilliseconds: UInt64 = remainderAttoseconds >= UInt64(attosecondsPerMillisecond / 2) ? 1 : 0
-
-        let (partialMilliseconds, partialOverflow) = secondsMilliseconds.addingReportingOverflow(attosecondsMilliseconds)
-        precondition(!partialOverflow, "\(parameter) is too large to encode")
-        let (totalMilliseconds, totalOverflow) = partialMilliseconds.addingReportingOverflow(roundedMilliseconds)
-        precondition(!totalOverflow, "\(parameter) is too large to encode")
-
-        precondition(
-            totalMilliseconds <= rateLimitPayloadMask,
-            "\(parameter) is too large to encode"
-        )
-        return totalMilliseconds
-    }
-
-    private struct RateLimitMergeResult {
-        let configuration: ObservationRateLimit?
-        let hasConflict: Bool
-    }
-
-    private static func mergeRateLimit(
-        lhs: ObservationRateLimit?,
-        lhsConflicting: Bool,
-        rhs: ObservationRateLimit?,
-        rhsConflicting: Bool
-    ) -> RateLimitMergeResult {
-        if lhsConflicting || rhsConflicting {
-            return RateLimitMergeResult(configuration: nil, hasConflict: true)
-        }
-
-        switch (lhs, rhs) {
-        case (nil, nil):
-            return RateLimitMergeResult(configuration: nil, hasConflict: false)
-        case let (lhs?, nil):
-            return RateLimitMergeResult(configuration: lhs, hasConflict: false)
-        case let (nil, rhs?):
-            return RateLimitMergeResult(configuration: rhs, hasConflict: false)
-        case let (lhs?, rhs?):
-            if lhs == rhs {
-                return RateLimitMergeResult(configuration: lhs, hasConflict: false)
-            }
-            return RateLimitMergeResult(configuration: nil, hasConflict: true)
-        }
+        backend == .legacy
     }
 }
 
@@ -481,7 +78,7 @@ public extension Observable where Self: AnyObject {
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -525,7 +122,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     callbackIsolation: onChange.isolation,
@@ -547,7 +144,7 @@ public extension Observable where Self: AnyObject {
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -591,7 +188,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     callbackIsolation: onChange.isolation,
@@ -613,7 +210,7 @@ public extension Observable where Self: AnyObject {
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -655,7 +252,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeTaskImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     of: getter,
@@ -676,7 +273,7 @@ public extension Observable where Self: AnyObject {
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -718,7 +315,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeTaskImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     of: getter,
@@ -739,7 +336,7 @@ public extension Observable where Self: AnyObject {
     func observe(
         _ keyPaths: sending [PartialKeyPath<Self>],
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -782,7 +379,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     callbackIsolation: onChange.isolation,
@@ -804,7 +401,7 @@ public extension Observable where Self: AnyObject {
     func observeTask(
         _ keyPaths: sending [PartialKeyPath<Self>],
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -845,7 +442,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeTaskImpl(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     of: getter,
@@ -868,7 +465,7 @@ public extension Observable where Self: AnyObject {
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -918,7 +515,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeImplNonSendable(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     callbackIsolation: onChange.isolation,
@@ -940,7 +537,7 @@ public extension Observable where Self: AnyObject {
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -990,7 +587,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeImplNonSendable(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     callbackIsolation: onChange.isolation,
@@ -1012,7 +609,7 @@ public extension Observable where Self: AnyObject {
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -1062,7 +659,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeTaskImplNonSendable(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     of: getter,
@@ -1083,7 +680,7 @@ public extension Observable where Self: AnyObject {
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
-        options: ObservationOptions = [],
+        options: ObservationOptions = ObservationOptions(),
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
         isolation: isolated (any Actor)? = #isolation,
@@ -1131,7 +728,7 @@ public extension Observable where Self: AnyObject {
                 let handle = observeTaskImplNonSendable(
                     owner: owner,
                     options: options,
-                    rateLimit: options.rateLimitForObservation,
+                    rateLimit: options.rateLimit,
                     rateLimitClock: clock,
                     isolation: isolation,
                     of: getter,
@@ -1165,6 +762,9 @@ private func preconditionNonSendableSameIsolation(
     consumerIsolation: (any Actor)?,
     operation: StaticString
 ) {
+    // Swift does not expose a static way to prove two @isolated(any) closures
+    // share the same actor instance, so non-Sendable delivery keeps this runtime
+    // invariant.
     precondition(
         hasSameObservationIsolation(producerIsolation, consumerIsolation),
         "\(operation): non-Sendable observation requires producer and consumer closures to share the same actor isolation"
@@ -1221,7 +821,7 @@ private struct ObservationBridgeStreamBuilder<Value>: Sendable {
 }
 
 func makeObservationStream<Value: Sendable>(
-    options: ObservationOptions = [],
+    options: ObservationOptions = ObservationOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     rateLimit: ObservationRateLimit? = nil,
@@ -1243,7 +843,7 @@ func makeObservationStream<Value: Sendable>(
 }
 
 private func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
-    options: ObservationOptions = [],
+    options: ObservationOptions = ObservationOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     rateLimit: ObservationRateLimit? = nil,
@@ -1265,7 +865,7 @@ private func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
 }
 
 func makeObservationStream<Value>(
-    options: ObservationOptions = [],
+    options: ObservationOptions = ObservationOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     rateLimit: ObservationRateLimit? = nil,
@@ -1316,7 +916,7 @@ func makeObservationStream<Value>(
 }
 
 private func makeObservationStreamFromCapturedIsolation<Value>(
-    options: ObservationOptions = [],
+    options: ObservationOptions = ObservationOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     rateLimit: ObservationRateLimit? = nil,
@@ -1377,7 +977,7 @@ private func makeObservationStreamFromCapturedIsolation<Value>(
 }
 
 private func makeRawObservationStream<Value: Sendable>(
-    options: ObservationOptions = [],
+    options: ObservationOptions = ObservationOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: (any Actor)?
 ) -> AsyncStream<Value> {
@@ -1453,8 +1053,12 @@ private func drainNativeObservationValues<Value: Sendable>(
 
 public struct ObservationBridge<Value>: AsyncSequence {
     public typealias Element = Value
+    public typealias Failure = Never
 
     public struct Iterator: AsyncIteratorProtocol {
+        public typealias Element = Value
+        public typealias Failure = Never
+
         private var base: AsyncStream<Value>.Iterator
 
         fileprivate init(base: AsyncStream<Value>.Iterator) {
@@ -1483,7 +1087,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
             options: options,
             observe: observe,
             capturedIsolation: constructionIsolation,
-            rateLimit: options.rateLimitForObservation,
+            rateLimit: options.rateLimit,
             rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
@@ -1497,7 +1101,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            options: [],
+            options: ObservationOptions(),
             observe
         )
     }
@@ -1517,7 +1121,7 @@ public extension ObservationBridge where Value: Sendable {
             options: options,
             observe: observe,
             capturedIsolation: constructionIsolation,
-            rateLimit: options.rateLimitForObservation,
+            rateLimit: options.rateLimit,
             rateLimitClock: clock
         )
         self.init(streamFactory: builder.makeStream)
@@ -1527,7 +1131,7 @@ public extension ObservationBridge where Value: Sendable {
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            options: [],
+            options: ObservationOptions(),
             observe
         )
     }
