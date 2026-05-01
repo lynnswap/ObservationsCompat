@@ -1,3 +1,7 @@
+/// Owns callback and task observations for an explicit lifecycle.
+///
+/// Store ``ObservationRegistration`` values in a scope while their observations should stay
+/// active. The scope cancels all stored observations when it is deallocated.
 public final class ObservationScope {
     private var slots: [AnyHashable: ObservationScopeSlot] = [:]
     private var transactionDeclarations: [AnyHashable: ObservationScopeDeclaration]?
@@ -8,8 +12,17 @@ public final class ObservationScope {
     private var cancelledSlotCreationIDs: Set<AnyHashable> = []
     private var cancelsAllDuringSlotCreation = false
 
+    /// Creates an empty observation scope.
     public init() {}
 
+    /// Reconciles the observations declared while running `body`.
+    ///
+    /// Observations stored from the same call sites or explicit identifiers reuse their existing
+    /// pipelines when their configuration still matches. Observations that were active before the
+    /// update but are not stored again from `body` are cancelled.
+    ///
+    /// - Parameter body: A synchronous declaration block that stores the observations that should
+    ///   remain active after the update.
     public func update(_ body: () -> Void) {
         if transactionDeclarations != nil {
             body()
@@ -24,6 +37,13 @@ public final class ObservationScope {
         apply(declarations, cancelsMissingSlots: true)
     }
 
+    /// Cancels the observation with the supplied explicit identifier.
+    ///
+    /// Use this only for registrations created with the same `id:` value. Observations without an
+    /// explicit identifier use a call-site-based identity and are usually managed by ``update(_:)``
+    /// or ``cancelAll()``.
+    ///
+    /// - Parameter id: The explicit identifier passed to `observe` or `observeTask`.
     public func cancel(id: some Hashable) {
         let id = AnyHashable(id)
         transactionDeclarations?.removeValue(forKey: id)
@@ -35,6 +55,7 @@ public final class ObservationScope {
         }
     }
 
+    /// Cancels every observation currently owned by the scope.
     public func cancelAll() {
         transactionDeclarations?.removeAll(keepingCapacity: true)
         let currentSlots = Array(slots.values)

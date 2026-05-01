@@ -1,6 +1,22 @@
 import Observation
 
 public extension Observable where Self: AnyObject {
+    /// Declares a synchronous callback observation for a `Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. The callback receives the latest observed value after any configured rate limit.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - onChange: The callback to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -67,6 +83,22 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares a synchronous trigger-only observation for a `Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Use this overload when the callback only needs to know that the value changed.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - onChange: The callback to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -133,6 +165,25 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares an asynchronous task observation for a `Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. The task receives the latest observed value after any configured rate limit.
+    ///
+    /// ObservationBridge does not cancel an in-flight task when a new value arrives; it preserves
+    /// one pending latest value and coalesces any additional backlog into that pending value.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - task: The asynchronous task to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -196,6 +247,25 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares an asynchronous trigger-only task observation for a `Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Use this overload when the task only needs to know that the value changed.
+    ///
+    /// ObservationBridge does not cancel an in-flight task when a new change arrives; it preserves
+    /// one pending change and coalesces any additional backlog into that pending change.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - task: The asynchronous task to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -259,6 +329,23 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares a synchronous trigger-only observation for multiple key paths.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Multiple-key-path observations do not pass values to the callback; read any
+    /// derived state from the owner inside `onChange`.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPaths: The key paths to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - onChange: The callback to run when any observed value changes.
+    ///   - isolation: The actor isolation used to read the observed values.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observe(
         _ keyPaths: sending [PartialKeyPath<Self>],
         id: AnyHashable? = nil,
@@ -324,6 +411,26 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares an asynchronous trigger-only task observation for multiple key paths.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Multiple-key-path observations do not pass values to the task; read any derived
+    /// state from the owner inside `task`.
+    ///
+    /// ObservationBridge does not cancel an in-flight task when a new change arrives; it preserves
+    /// one pending change and coalesces any additional backlog into that pending change.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPaths: The key paths to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - task: The asynchronous task to run when any observed value changes.
+    ///   - isolation: The actor isolation used to read the observed values.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observeTask(
         _ keyPaths: sending [PartialKeyPath<Self>],
         id: AnyHashable? = nil,
@@ -388,6 +495,23 @@ public extension Observable where Self: AnyObject {
 }
 
 public extension Observable where Self: AnyObject {
+    /// Declares a synchronous callback observation for a non-`Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Non-`Sendable` values use the legacy backend and require the producer and
+    /// consumer closures to share the same actor isolation.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - onChange: The callback to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -460,6 +584,23 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares a synchronous trigger-only observation for a non-`Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Non-`Sendable` observations require the producer and consumer closures to share
+    /// the same actor isolation even though this overload does not pass the value to the callback.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - onChange: The callback to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -532,6 +673,26 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares an asynchronous task observation for a non-`Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Non-`Sendable` values use the legacy backend and require the producer and task
+    /// closures to share the same actor isolation.
+    ///
+    /// ObservationBridge does not cancel an in-flight task when a new value arrives; it preserves
+    /// one pending latest value and coalesces any additional backlog into that pending value.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - task: The asynchronous task to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
@@ -603,6 +764,26 @@ public extension Observable where Self: AnyObject {
         )
     }
 
+    /// Declares an asynchronous trigger-only task observation for a non-`Sendable` value at a key path.
+    ///
+    /// Store the returned registration in an ``ObservationScope`` to start the observation and keep
+    /// it active. Non-`Sendable` observations require the producer and task closures to share the
+    /// same actor isolation even though this overload does not pass the value to the task.
+    ///
+    /// ObservationBridge does not cancel an in-flight task when a new change arrives; it preserves
+    /// one pending change and coalesces any additional backlog into that pending change.
+    ///
+    /// The underscored source-location parameters are used to derive a stable automatic identity;
+    /// leave their default values unless you are intentionally overriding call-site identity.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The key path to read and observe.
+    ///   - id: An optional explicit identity for reuse and cancellation.
+    ///   - options: Backend and rate-limit configuration.
+    ///   - clock: The clock used for debounce or throttle timing.
+    ///   - task: The asynchronous task to run when the observed value changes.
+    ///   - isolation: The actor isolation used to read the observed value.
+    /// - Returns: A registration that must be stored in an ``ObservationScope``.
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
         id: AnyHashable? = nil,
