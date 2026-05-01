@@ -50,6 +50,15 @@ private final class OptionalCounterModel: @unchecked Sendable {
     var value: Int? = nil
 }
 
+private struct NestedCounterPayload: Sendable {
+    var value: Int = 0
+}
+
+@Observable
+private final class NestedCounterModel: @unchecked Sendable {
+    var payload = NestedCounterPayload()
+}
+
 @MainActor
 @Observable
 private final class MainActorCounterModel {
@@ -57,8 +66,28 @@ private final class MainActorCounterModel {
 }
 
 @MainActor
-private final class MainActorHandleHolder {
-    var handles: Set<ObservationHandle> = []
+private final class MainActorObservationScopeHolder {
+    let observations = ObservationScope()
+}
+
+private final class ObservationScopeCancellationProbe: @unchecked Sendable {
+    let observations = ObservationScope()
+
+    func cancel(id: String) {
+        observations.cancel(id: id)
+    }
+
+    func cancelAll() {
+        observations.cancelAll()
+    }
+}
+
+private extension ObservationRegistration {
+    func storedForTest() -> ObservationScope {
+        let observations = ObservationScope()
+        store(in: observations)
+        return observations
+    }
 }
 
 private final class NonSendablePayload {
@@ -82,6 +111,25 @@ private final class DeinitProbeCounterModel: @unchecked Sendable {
 
     init(onDeinit: @escaping @Sendable () -> Void) {
         self.onDeinit = onDeinit
+    }
+
+    deinit {
+        onDeinit()
+    }
+}
+
+private final class CallbackCaptureProbe: @unchecked Sendable {
+    private let storage = Mutex<Int?>(nil)
+    private let onDeinit: @Sendable () -> Void
+
+    init(onDeinit: @escaping @Sendable () -> Void) {
+        self.onDeinit = onDeinit
+    }
+
+    func record(_ value: Int) {
+        storage.withLock { storedValue in
+            storedValue = value
+        }
     }
 
     deinit {
@@ -347,6 +395,25 @@ private final class TestDebounceClock: Clock, @unchecked Sendable {
     }
 }
 
+private struct DescriptorValueClock: Clock, Hashable, Sendable {
+    typealias Instant = ContinuousClock.Instant
+    typealias Duration = Swift.Duration
+
+    let id: Int
+
+    var now: Instant {
+        ContinuousClock().now
+    }
+
+    var minimumResolution: Duration {
+        .nanoseconds(1)
+    }
+
+    func sleep(until deadline: Instant, tolerance: Duration? = nil) async throws {
+        try await ContinuousClock().sleep(until: deadline, tolerance: tolerance)
+    }
+}
+
 private actor OperationGate {
     private var permits: Set<Int> = []
     private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -486,7 +553,11 @@ private struct StressRunOutcome: Sendable {
     let firstFailure: String?
 }
 
-private typealias NativeStressRegistrar = @Sendable (LockedCounterModel, @escaping @Sendable (Int) -> Void) -> ObservationHandle
+private typealias NativeStressRegistrar = @Sendable (
+    LockedCounterModel,
+    ObservationScope,
+    @escaping @Sendable (Int) -> Void
+) -> Void
 
 private func runTwoThreadWriteAndReadRound(
     model: LockedCounterModel,
@@ -542,10 +613,11 @@ private func runRandomizedObservationStress(
                     var rng = StressRNG(seed: workerSeed)
                     let model = LockedCounterModel()
                     let observedFlag = Mutex(false)
-                    let handle = register(model) { _ in
+                    let observations = ObservationScope()
+                    register(model, observations) { _ in
                         observedFlag.withLock { $0 = true }
                     }
-                    defer { handle.cancel() }
+                    defer { observations.cancelAll() }
 
                     for iteration in 0..<workerIterations {
                         let first = rng.nextInt(upperBound: 1_000_000_000)
@@ -1100,10 +1172,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.parity, options: []) { value in
+        let observations = model.observeTask(\.parity, options: []) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1120,10 +1192,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observe(\.value, options: []) {
+        let observations = model.observe(\.value, options: []) {
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
 
@@ -1139,10 +1211,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: []) {
             await queue.push(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 1)
 
@@ -1162,10 +1234,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: []) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(recorder.snapshot() == [0])
     }
@@ -1179,10 +1251,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: []) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder, nanoseconds: 1_000_000_000))
         #expect(recorder.snapshot() == [0])
@@ -1199,12 +1271,12 @@ final class ObservationBridgeTests {
             let model = CounterModel()
             model.value = iteration
 
-            let handle = model.observeTask(\.value, options: []) { value in
+            let observations = model.observeTask(\.value, options: []) { value in
                 recorder.append(value)
-            }
+            }.storedForTest()
 
             #expect(await waitUntilCount(iteration + 1, in: recorder, nanoseconds: 1_000_000_000))
-            handle.cancel()
+            observations.cancelAll()
         }
     }
 
@@ -1219,7 +1291,7 @@ final class ObservationBridgeTests {
             let started = ValueQueue<Int>()
             let cancelled = ValueQueue<Int>()
 
-            let handle = model.observeTask(\.value, options: []) { value in
+            let observations = model.observeTask(\.value, options: []) { value in
                 await started.push(value)
                 await withTaskCancellationHandler {
                     while !Task.isCancelled {
@@ -1230,9 +1302,9 @@ final class ObservationBridgeTests {
                         await cancelled.push(value)
                     }
                 }
-            }
+            }.storedForTest()
 
-            handle.cancel()
+            observations.cancelAll()
 
             guard let startedValue = await nextWithTimeout(from: started, nanoseconds: 100_000_000) else {
                 continue
@@ -1253,14 +1325,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
 
-        let handle = model.observe(
+        let observations = model.observe(
             \.value,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(recorder.snapshot() == [0])
     }
@@ -1276,14 +1348,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
 
-        let handle = model.observe(
+        let observations = model.observe(
             \.value,
             options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(recorder.snapshot() == [0])
     }
@@ -1299,14 +1371,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder, nanoseconds: 1_000_000_000))
         #expect(recorder.snapshot() == [0])
@@ -1319,14 +1391,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
 
-        let handle = model.observe(
+        let observations = model.observe(
             \.value,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         await clock.sleep(untilSuspendedBy: 1)
         #expect(recorder.snapshot().isEmpty)
@@ -1341,10 +1413,10 @@ final class ObservationBridgeTests {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int?>()
 
-        let handle = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: []) { value in
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
         #expect(recorder.snapshot() == [nil])
@@ -1370,10 +1442,10 @@ final class ObservationBridgeTests {
         let model = OptionalCounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: []) {
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
 
@@ -1399,14 +1471,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1431,14 +1503,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         await clock.sleep(untilSuspendedBy: 1)
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
@@ -1470,14 +1542,14 @@ final class ObservationBridgeTests {
             mode: .delayedFirst
         )
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(299))
@@ -1500,14 +1572,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1535,14 +1607,14 @@ final class ObservationBridgeTests {
             mode: .earliest
         )
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1568,11 +1640,11 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let handle = model.observe(\.value, options: []) { value in
+        let observations = model.observe(\.value, options: []) { value in
             MainActor.assertIsolated()
             recorder.append(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
         #expect(recorder.snapshot() == [0])
@@ -1591,11 +1663,11 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let recorder = ValueRecorder<Int>()
-        let handle = model.observe(\.value, options: []) {
+        let observations = model.observe(\.value, options: []) {
             MainActor.assertIsolated()
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
 
@@ -1616,11 +1688,11 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: []) { value in
             MainActor.assertIsolated()
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1640,11 +1712,11 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let handle = model.observeTask(\.value, options: []) {
+        let observations = model.observeTask(\.value, options: []) {
             MainActor.assertIsolated()
             await queue.push(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 1)
 
@@ -1664,12 +1736,10 @@ final class ObservationBridgeTests {
 
         let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
-        let handle = await MainActor.run {
-            model.observeTask(\.value, options: []) { @AlternateGlobalActor value in
-                await queue.push(value)
-            }
-        }
-        defer { handle.cancel() }
+        let observations = model.observeTask(\.value, options: []) { @AlternateGlobalActor value in
+            await queue.push(value)
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1721,14 +1791,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.parity,
             options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -1747,14 +1817,14 @@ final class ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.parity,
             options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -2116,13 +2186,13 @@ final class ObservationBridgeTests {
         let recorder = ValueRecorder<Int>()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             [\.value, \.isEnabled],
             options: [.rateLimit(.debounce(debounce))]
         ) {
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
 
@@ -2140,10 +2210,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask([\.value, \.isEnabled], options: []) {
+        let observations = model.observeTask([\.value, \.isEnabled], options: []) {
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
         #expect(recorder.count() == 1)
@@ -2160,10 +2230,10 @@ final class ObservationBridgeTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observe([\.value, \.isEnabled], options: []) {
+        let observations = model.observe([\.value, \.isEnabled], options: []) {
             recorder.append(1)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilCount(1, in: recorder))
 
@@ -2175,35 +2245,45 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskStopsAfterHandleRelease() async {
+    func observeTaskRegistrationWithoutStoreDoesNotStartObservation() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-        var handle: ObservationHandle? = model.observeTask(\.value, options: []) { value in
+        _ = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
 
-        #expect(await nextWithTimeout(from: queue) == 0)
-        #expect(handle != nil)
-
-        handle = nil
         await Task.yield()
-
-        model.value = 9
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
-    func observeTaskStoreInSetKeepsObservationAlive() async {
+    func observationRegistrationWithoutStoreDoesNotRetainOwner() async {
+        weak var weakModel: CounterModel?
+        var registration: ObservationRegistration?
+
+        do {
+            let model = CounterModel()
+            weakModel = model
+            registration = model.observeTask(\.value, options: []) { _ in }
+        }
+
+        withExtendedLifetime(registration) {
+            #expect(weakModel == nil)
+        }
+    }
+
+    @Test
+    func observeTaskStoreInScopeKeepsObservationAlive() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-        var cancellables = Set<ObservationHandle>()
+        let observations = ObservationScope()
+        defer { observations.cancelAll() }
 
         model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
-        .store(in: &cancellables)
+        .store(in: observations)
 
-        #expect(cancellables.count == 1)
         #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 9
@@ -2211,19 +2291,19 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskStoreInSetStopsAfterRemoval() async {
+    func observeTaskStoreInScopeStopsAfterCancelAll() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-        var cancellables = Set<ObservationHandle>()
+        let observations = ObservationScope()
 
         model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
-        .store(in: &cancellables)
+        .store(in: observations)
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        cancellables.removeAll(keepingCapacity: false)
+        observations.cancelAll()
         await Task.yield()
 
         model.value = 10
@@ -2231,28 +2311,615 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskStoreInSetDeduplicatesSameHandle() async {
+    func observeTaskStoreInScopeCanCancelExplicitID() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-        var cancellables = Set<ObservationHandle>()
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = ObservationScope()
+
+        model.observeTask(\.value, id: "value", options: []) { value in
+            await queue.push(value)
+        }.store(in: observations)
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        observations.cancel(id: "value")
+        await Task.yield()
+
+        model.value = 9
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationRegistrationStoresIndependentCallbackBoxesPerScope() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let firstScope = ObservationScope()
+        let secondScope = ObservationScope()
+        defer {
+            firstScope.cancelAll()
+            secondScope.cancelAll()
+        }
+
+        let registration = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
 
-        handle.store(in: &cancellables)
-        handle.store(in: &cancellables)
-
-        #expect(cancellables.count == 1)
+        registration.store(in: firstScope)
         #expect(await nextWithTimeout(from: queue) == 0)
+
+        registration.store(in: secondScope)
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        firstScope.cancelAll()
+        await Task.yield()
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+    }
+
+    @Test
+    func observationScopeCancelIDDuringInitialObserveCallbackPreventsSlotStorage() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        model.observe(\.value, id: "value", options: []) { value in
+            recorder.append(value)
+            holder.cancel(id: "value")
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0])
+
+        model.value = 1
+        await Task.yield()
+        #expect(recorder.snapshot() == [0])
+    }
+
+    @Test
+    func observationScopeCancelIDDuringInitialReplacementCallbackPreventsSlotStorage() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        model.observe(\.value, id: "value", options: []) { value in
+            recorder.append(value)
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0])
+
+        model.observe(\.secondaryValue, id: "value", options: []) { value in
+            recorder.append(100 + value)
+            holder.cancel(id: "value")
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0, 100])
+
+        model.value = 1
+        model.secondaryValue = 1
+        await Task.yield()
+        #expect(recorder.snapshot() == [0, 100])
+    }
+
+    @Test
+    func observationScopeStoreDuringInitialObserveCallbackDoesNotOverwriteReentrantSlot() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+        let didReenter = Mutex(false)
+
+        model.observe(\.value, id: "value", options: []) { value in
+            recorder.append(value)
+
+            let shouldReenter = didReenter.withLock { didReenter in
+                if didReenter {
+                    return false
+                }
+                didReenter = true
+                return true
+            }
+
+            if shouldReenter {
+                model.observe(\.value, id: "value", options: []) { value in
+                    recorder.append(100 + value)
+                }.store(in: holder.observations)
+            }
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0, 100])
+
+        model.value = 1
+        await Task.yield()
+        #expect(recorder.snapshot() == [0, 100, 101])
+    }
+
+    @Test
+    func observationScopeUpdateOmittingIDDuringInitialObserveCallbackPreventsSlotStorage() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        model.observe(\.value, id: "value", options: []) { value in
+            recorder.append(value)
+            holder.observations.update {}
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0])
+
+        model.value = 1
+        await Task.yield()
+        #expect(recorder.snapshot() == [0])
+    }
+
+    @Test
+    func observationScopeCancelIDDuringBatchedInitialCallbackPreventsPendingSlotStorage() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        holder.observations.update {
+            model.observe(\.value, id: "first", options: []) { value in
+                recorder.append(value)
+                holder.cancel(id: "second")
+            }.store(in: holder.observations)
+
+            model.observe(\.secondaryValue, id: "second", options: []) { value in
+                recorder.append(100 + value)
+            }.store(in: holder.observations)
+        }
+
+        model.secondaryValue = 1
+        await Task.yield()
+        #expect(!recorder.snapshot().contains(101))
+    }
+
+    @Test
+    func observationScopeReentrantStoreDuringBatchedInitialCallbackWinsOverPendingDeclaration() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        holder.observations.update {
+            model.observe(\.value, id: "first", options: []) { _ in
+                model.observe(\.secondaryValue, id: "second", options: []) { value in
+                    recorder.append(200 + value)
+                }.store(in: holder.observations)
+            }.store(in: holder.observations)
+
+            model.observe(\.secondaryValue, id: "second", options: []) { value in
+                recorder.append(100 + value)
+            }.store(in: holder.observations)
+        }
+
+        model.secondaryValue = 1
+        await Task.yield()
+        let values = recorder.snapshot()
+        #expect(values.contains(201))
+        #expect(!values.contains(101))
+    }
+
+    @Test
+    func observationScopeCancelAllDuringInitialObserveCallbackPreventsSlotStorage() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = CounterModel()
+        let holder = ObservationScopeCancellationProbe()
+        let recorder = ValueRecorder<Int>()
+
+        model.observe(\.value, options: []) { value in
+            recorder.append(value)
+            holder.cancelAll()
+        }.store(in: holder.observations)
+
+        #expect(recorder.snapshot() == [0])
+
+        model.value = 1
+        await Task.yield()
+        #expect(recorder.snapshot() == [0])
+    }
+
+    @Test
+    func observationScopeUpdateKeepsInFlightTaskForSameAutomaticID() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let started = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+        defer {
+            observations.cancelAll()
+        }
+
+        func bind() {
+            observations.update {
+                model.observeTask(\.value, options: []) { value in
+                    await started.push(value)
+                    await withTaskCancellationHandler {
+                        await gate.wait(for: value)
+                    } onCancel: {
+                        Task {
+                            await cancelled.push(value)
+                            await gate.release(value)
+                        }
+                    }
+                }.store(in: observations)
+            }
+        }
+
+        bind()
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        bind()
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(0)
+    }
+
+    @Test
+    func observationScopeUpdateKeepsInFlightTaskForEquivalentDynamicKeyPath() async {
+        let model = NestedCounterModel()
+        let observations = ObservationScope()
+        let started = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+        defer {
+            observations.cancelAll()
+        }
+
+        func makeKeyPath() -> KeyPath<NestedCounterModel, Int> {
+            (\NestedCounterModel.payload).appending(path: \NestedCounterPayload.value)
+        }
+
+        func bind() {
+            observations.update {
+                model.observeTask(makeKeyPath(), options: []) { value in
+                    await started.push(value)
+                    await withTaskCancellationHandler {
+                        await gate.wait(for: value)
+                    } onCancel: {
+                        Task {
+                            await cancelled.push(value)
+                            await gate.release(value)
+                        }
+                    }
+                }.store(in: observations)
+            }
+        }
+
+        bind()
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        bind()
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(0)
+    }
+
+    @Test
+    func observationScopeUpdateReplacesCallbackForSameAutomaticID() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let firstQueue = ValueQueue<Int>()
+        let secondQueue = ValueQueue<Int>()
+        var usesSecondQueue = false
+        defer {
+            observations.cancelAll()
+        }
+
+        func bind() {
+            let targetQueue = usesSecondQueue ? secondQueue : firstQueue
+            observations.update {
+                model.observeTask(\.value, options: []) { value in
+                    await targetQueue.push(value)
+                }.store(in: observations)
+            }
+        }
+
+        bind()
+        #expect(await nextWithTimeout(from: firstQueue) == 0)
+
+        usesSecondQueue = true
+        bind()
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: secondQueue) == 1)
+        #expect(await nextWithTimeout(from: firstQueue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeUpdateCancelsMissingDeclaration() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let queue = ValueQueue<Int>()
+
+        observations.update {
+            model.observeTask(\.value, options: []) { value in
+                await queue.push(value)
+            }.store(in: observations)
+        }
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        observations.update {}
+        await Task.yield()
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeUpdateUsesLastDeclarationForDuplicateID() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let firstQueue = ValueQueue<Int>()
+        let secondQueue = ValueQueue<Int>()
+        defer {
+            observations.cancelAll()
+        }
+
+        observations.update {
+            model.observeTask(\.value, id: "value", options: []) { value in
+                await firstQueue.push(value)
+            }.store(in: observations)
+
+            model.observeTask(\.value, id: "value", options: []) { value in
+                await secondQueue.push(value)
+            }.store(in: observations)
+        }
+
+        #expect(await nextWithTimeout(from: secondQueue) == 0)
+        #expect(await nextWithTimeout(from: firstQueue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeCancelIDInsideUpdateBodyRemovesQueuedDeclaration() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let queue = ValueQueue<Int>()
+
+        observations.update {
+            model.observeTask(\.value, id: "value", options: []) { value in
+                await queue.push(value)
+            }.store(in: observations)
+
+            observations.cancel(id: "value")
+        }
+
+        await Task.yield()
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeCancelAllInsideUpdateBodyRemovesQueuedDeclarations() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let queue = ValueQueue<Int>()
+
+        observations.update {
+            model.observeTask(\.value, id: "value", options: []) { value in
+                await queue.push(value)
+            }.store(in: observations)
+
+            observations.cancelAll()
+        }
+
+        await Task.yield()
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeUpdateRestartsWhenDescriptorChanges() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let firstStarted = ValueQueue<Int>()
+        let firstCancelled = ValueQueue<Int>()
+        let secondStarted = ValueQueue<Int>()
+        let gate = OperationGate()
+        defer {
+            observations.cancelAll()
+        }
+
+        observations.update {
+            model.observeTask(\.value, id: "counter", options: []) { value in
+                await firstStarted.push(value)
+                await withTaskCancellationHandler {
+                    await gate.wait(for: value)
+                } onCancel: {
+                    Task {
+                        await firstCancelled.push(value)
+                        await gate.release(value)
+                    }
+                }
+            }.store(in: observations)
+        }
+        #expect(await nextWithTimeout(from: firstStarted) == 0)
+
+        observations.update {
+            model.observeTask(\.secondaryValue, id: "counter", options: []) { value in
+                await secondStarted.push(value)
+            }.store(in: observations)
+        }
+
+        #expect(await nextWithTimeout(from: firstCancelled, nanoseconds: 2_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: secondStarted) == 0)
+    }
+
+    @Test
+    func observationScopeUpdateRestartsRateLimitedPipelineWhenClockChanges() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let firstClock = TestDebounceClock()
+        let secondClock = TestDebounceClock()
+        let firstQueue = ValueQueue<Int>()
+        let secondQueue = ValueQueue<Int>()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
+        let options: ObservationOptions = [.rateLimit(.debounce(debounce))]
+        defer {
+            observations.cancelAll()
+        }
+
+        func bind(clock: TestDebounceClock, queue: ValueQueue<Int>) {
+            observations.update {
+                model.observeTask(\.value, id: "counter", options: options, clock: clock) { value in
+                    await queue.push(value)
+                }.store(in: observations)
+            }
+        }
+
+        bind(clock: firstClock, queue: firstQueue)
+        let firstPipelineSuspended = await waitWithTimeout(nanoseconds: 1_000_000_000) {
+            await firstClock.sleep(untilSuspendedBy: 1)
+            return true
+        }
+        #expect(firstPipelineSuspended == true)
+
+        bind(clock: secondClock, queue: secondQueue)
+        let secondPipelineSuspended = await waitWithTimeout(nanoseconds: 1_000_000_000) {
+            await secondClock.sleep(untilSuspendedBy: 1)
+            return true
+        }
+        #expect(secondPipelineSuspended == true)
+
+        secondClock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: secondQueue) == 0)
+
+        firstClock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: firstQueue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observationScopeDescriptorTracksActorIsolationChanges() {
+        let model = CounterModel()
+        let firstIsolation = CallbackIsolationActor()
+        let secondIsolation = CallbackIsolationActor()
+        let firstDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: [],
+            clock: ContinuousClock(),
+            isolation: firstIsolation,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+        let equivalentDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: [],
+            clock: ContinuousClock(),
+            isolation: firstIsolation,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+        let changedIsolationDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: [],
+            clock: ContinuousClock(),
+            isolation: secondIsolation,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+        let observeDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: [],
+            clock: ContinuousClock(),
+            isolation: firstIsolation,
+            callbackIsolation: nil,
+            kind: .observeValue,
+            valueType: Int.self
+        )
+        let changedCallbackIsolationDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: [],
+            clock: ContinuousClock(),
+            isolation: firstIsolation,
+            callbackIsolation: secondIsolation,
+            kind: .observeValue,
+            valueType: Int.self
+        )
+
+        #expect(firstDescriptor == equivalentDescriptor)
+        #expect(firstDescriptor != changedIsolationDescriptor)
+        #expect(observeDescriptor != changedCallbackIsolationDescriptor)
+    }
+
+    @Test
+    func observationScopeDescriptorTracksValueClockChanges() {
+        let model = CounterModel()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
+        let options: ObservationOptions = [.rateLimit(.debounce(debounce))]
+        let firstDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: options,
+            clock: DescriptorValueClock(id: 1),
+            isolation: nil,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+        let equivalentDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: options,
+            clock: DescriptorValueClock(id: 1),
+            isolation: nil,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+        let changedClockDescriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: model,
+            keyPath: \.value,
+            options: options,
+            clock: DescriptorValueClock(id: 2),
+            isolation: nil,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Int.self
+        )
+
+        #expect(firstDescriptor == equivalentDescriptor)
+        #expect(firstDescriptor != changedClockDescriptor)
     }
 
     @Test
     @MainActor
-    func observeStoreInSetCancelsWhenOwnerDeinitializes() async {
+    func observeStoreInScopeCancelsWhenOwnerDeinitializes() async {
 #if canImport(ObjectiveC)
         let deinitFlag = DeinitFlag()
         var values: [Int] = []
-        var cancellables = Set<ObservationHandle>()
+        let observations = ObservationScope()
         weak var weakModel: DeinitProbeCounterModel?
 
         do {
@@ -2266,7 +2933,7 @@ final class ObservationBridgeTests {
             model.observe(\.value, options: []) { value in
                 values.append(value)
             }
-            .store(in: &cancellables)
+            .store(in: observations)
 
             let initialDeadline = ContinuousClock().now + .seconds(2)
             while values.isEmpty, ContinuousClock().now < initialDeadline {
@@ -2287,20 +2954,65 @@ final class ObservationBridgeTests {
         }
         #expect(weakModel == nil)
 
-        cancellables.removeAll(keepingCapacity: false)
+        observations.cancelAll()
 #else
         return
 #endif
     }
 
     @Test
-    func observeTaskStoreInSetCancelsWhenOwnerDeinitializes() async {
+    func observeStoreInScopeReleasesCallbackCapturesWhenOwnerDeinitializes() async {
+#if canImport(ObjectiveC)
+        let ownerDeinitFlag = DeinitFlag()
+        let captureDeinitFlag = DeinitFlag()
+        let observations = ObservationScope()
+        weak var weakCapture: CallbackCaptureProbe?
+
+        do {
+            let model = DeinitProbeCounterModel {
+                Task {
+                    await ownerDeinitFlag.mark()
+                }
+            }
+            let capture = CallbackCaptureProbe {
+                Task {
+                    await captureDeinitFlag.mark()
+                }
+            }
+            weakCapture = capture
+
+            model.observe(\.value, options: []) { [capture] value in
+                capture.record(value)
+            }.store(in: observations)
+        }
+
+        let ownerDeinitDeadline = ContinuousClock().now + .seconds(2)
+        while !(await ownerDeinitFlag.didDeinit), ContinuousClock().now < ownerDeinitDeadline {
+            await Task.yield()
+        }
+        #expect(await ownerDeinitFlag.didDeinit)
+
+        let captureDeinitDeadline = ContinuousClock().now + .seconds(2)
+        while !(await captureDeinitFlag.didDeinit), ContinuousClock().now < captureDeinitDeadline {
+            await Task.yield()
+        }
+        #expect(await captureDeinitFlag.didDeinit)
+        #expect(weakCapture == nil)
+
+        observations.cancelAll()
+#else
+        return
+#endif
+    }
+
+    @Test
+    func observeTaskStoreInScopeCancelsWhenOwnerDeinitializes() async {
 #if canImport(ObjectiveC)
         let started = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
         let deinitFlag = DeinitFlag()
         let gate = OperationGate()
-        var cancellables = Set<ObservationHandle>()
+        let observations = ObservationScope()
         weak var weakModel: DeinitProbeCounterModel?
 
         do {
@@ -2322,7 +3034,7 @@ final class ObservationBridgeTests {
                     }
                 }
             }
-            .store(in: &cancellables)
+            .store(in: observations)
 
             #expect(await nextWithTimeout(from: started) == 0)
         }
@@ -2340,7 +3052,7 @@ final class ObservationBridgeTests {
         #expect(weakModel == nil)
         #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
 
-        cancellables.removeAll(keepingCapacity: false)
+        observations.cancelAll()
 #else
         return
 #endif
@@ -2348,25 +3060,25 @@ final class ObservationBridgeTests {
 
     @Test
     @MainActor
-    func mainActorHandleHolderReleaseStopsObserveAndObserveTaskPipelines() async {
+    func mainActorObservationScopeHolderReleaseStopsObserveAndObserveTaskPipelines() async {
         let model = MainActorCounterModel()
         var observedValues: [Int] = []
         var observedTaskValues: [Int] = []
-        weak var weakHolder: MainActorHandleHolder?
+        weak var weakHolder: MainActorObservationScopeHolder?
 
         do {
-            let holder = MainActorHandleHolder()
+            let holder = MainActorObservationScopeHolder()
             weakHolder = holder
 
             model.observe(\.value, options: []) { value in
                 observedValues.append(value)
             }
-            .store(in: &holder.handles)
+            .store(in: holder.observations)
 
             model.observeTask(\.value, options: []) { value in
                 observedTaskValues.append(value)
             }
-            .store(in: &holder.handles)
+            .store(in: holder.observations)
 
             let initialDeadline = ContinuousClock().now + .seconds(2)
             while (observedValues.isEmpty || observedTaskValues.isEmpty), ContinuousClock().now < initialDeadline {
@@ -2392,17 +3104,18 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskStopsAfterHandleCancel() async {
+    func observeTaskStopsAfterScopeCancelAll() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
+        let observations = ObservationScope()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: []) { value in
             await queue.push(value)
-        }
+        }.store(in: observations)
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        handle.cancel()
+        observations.cancelAll()
         await Task.yield()
 
         model.value = 10
@@ -2410,13 +3123,14 @@ final class ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskCancelsInFlightTaskOnHandleCancel() async {
+    func observeTaskCancelsInFlightTaskOnScopeCancelAll() async {
         let model = CounterModel()
         let started = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
+        let observations = ObservationScope()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        model.observeTask(\.value, options: []) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -2426,11 +3140,11 @@ final class ObservationBridgeTests {
                     await gate.release(value)
                 }
             }
-        }
+        }.store(in: observations)
 
         #expect(await nextWithTimeout(from: started) == 0)
 
-        handle.cancel()
+        observations.cancelAll()
 
         #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
     }
@@ -2443,7 +3157,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: []) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -2457,8 +3171,8 @@ final class ObservationBridgeTests {
                     await gate.release(value)
                 }
             }
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: started) == 0)
 
@@ -2490,7 +3204,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: []) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -2504,8 +3218,8 @@ final class ObservationBridgeTests {
                     await gate.release(value)
                 }
             }
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: started) == 0)
 
@@ -2542,7 +3256,7 @@ final class ObservationBridgeTests {
         let gate = OperationGate()
         let debounce = ObservationDebounce(interval: .milliseconds(150), mode: .immediateFirst)
 
-        let handle = model.observeTask(
+        let observations = model.observeTask(
             \.value,
             options: [.rateLimit(.debounce(debounce))]
         ) { value in
@@ -2559,8 +3273,8 @@ final class ObservationBridgeTests {
                     await gate.release(value)
                 }
             }
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: started) == 0)
 
@@ -2587,10 +3301,10 @@ final class ObservationBridgeTests {
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, options: []) { value in
+        let observations = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
@@ -2616,11 +3330,11 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let handle = model.observe(\.payload, options: []) { payload in
+        let observations = model.observe(\.payload, options: []) { payload in
             MainActor.assertIsolated()
             observedValues.append(payload.value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
         #expect(observedValues.first == 0)
@@ -2636,11 +3350,11 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let handle = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: []) { payload in
             MainActor.assertIsolated()
             observedValues.append(payload.value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
         #expect(observedValues.first == 0)
@@ -2656,10 +3370,10 @@ final class ObservationBridgeTests {
         let model = MainActorNonSendablePayloadModel()
         var observedValues: [Int] = []
 
-        let handle = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: []) { payload in
             observedValues.append(payload.value)
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
         #expect(observedValues.first == 0)
@@ -2682,7 +3396,7 @@ final class ObservationBridgeTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let handle = model.observeTask(\.payload, options: []) { payload in
+        let observations = model.observeTask(\.payload, options: []) { payload in
             let payloadValue = payload.value
             await started.push(payloadValue)
             await withTaskCancellationHandler {
@@ -2697,8 +3411,8 @@ final class ObservationBridgeTests {
                     await gate.release(payloadValue)
                 }
             }
-        }
-        defer { handle.cancel() }
+        }.storedForTest()
+        defer { observations.cancelAll() }
 
         #expect(await nextWithTimeout(from: started) == 0)
 
@@ -2728,13 +3442,14 @@ final class ObservationBridgeTests {
 
     @Test
     @MainActor
-    func observeTaskCancelsInFlightNonSendableTaskOnHandleCancel() async {
+    func observeTaskCancelsInFlightNonSendableTaskOnScopeCancelAll() async {
         let model = MainActorNonSendablePayloadModel()
         let started = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
+        let observations = ObservationScope()
 
-        let handle = model.observeTask(\.payload, options: []) { payload in
+        model.observeTask(\.payload, options: []) { payload in
             let payloadValue = payload.value
             await started.push(payloadValue)
             await withTaskCancellationHandler {
@@ -2745,11 +3460,11 @@ final class ObservationBridgeTests {
                     await gate.release(payloadValue)
                 }
             }
-        }
+        }.store(in: observations)
 
         #expect(await nextWithTimeout(from: started) == 0)
 
-        handle.cancel()
+        observations.cancelAll()
 
         #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
     }
@@ -2792,6 +3507,7 @@ final class ObservationBridgeTests {
     func observeTaskDoesNotPreventOwnerDeinit() async {
 #if canImport(ObjectiveC)
         let deinitFlag = DeinitFlag()
+        let observations = ObservationScope()
         weak var weakModel: DeinitProbeCounterModel?
 
         do {
@@ -2803,13 +3519,14 @@ final class ObservationBridgeTests {
             weakModel = model
 
             model.observeTask(\.value, options: []) {
-            }
+            }.store(in: observations)
         }
 
         await Task.yield()
         await Task.yield()
         #expect(weakModel == nil)
         #expect(await deinitFlag.didDeinit)
+        observations.cancelAll()
 #else
         return
 #endif
@@ -2823,10 +3540,10 @@ final class ObservationBridgeStressTests {
     func legacyBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
-        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
+        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, observations, onObserved in
             model.observeTask(\.value, options: legacyOptionsForCurrentRuntime()) { value in
                 onObserved(value)
-            }
+            }.store(in: observations)
         }
 
         if !result.completed || result.firstFailure != nil {
@@ -2846,10 +3563,10 @@ final class ObservationBridgeStressTests {
 
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
-        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
+        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, observations, onObserved in
             model.observeTask(\.value, options: []) { value in
                 onObserved(value)
-            }
+            }.store(in: observations)
         }
 
         if !result.completed || result.firstFailure != nil {
@@ -2863,27 +3580,27 @@ final class ObservationBridgeStressTests {
 
     @Test
     @MainActor
-    func mainActorHandleHolderReleaseStressDoesNotCrash() async {
+    func mainActorObservationScopeHolderReleaseStressDoesNotCrash() async {
 #if canImport(ObjectiveC)
         for iteration in 0..<200 {
             let model = MainActorCounterModel()
-            weak var weakHolder: MainActorHandleHolder?
+            weak var weakHolder: MainActorObservationScopeHolder?
             var observeCount = 0
             var observeTaskCount = 0
 
             do {
-                let holder = MainActorHandleHolder()
+                let holder = MainActorObservationScopeHolder()
                 weakHolder = holder
 
                 model.observe(\.value, options: []) { _ in
                     observeCount += 1
                 }
-                .store(in: &holder.handles)
+                .store(in: holder.observations)
 
                 model.observeTask(\.value, options: []) { _ in
                     observeTaskCount += 1
                 }
-                .store(in: &holder.handles)
+                .store(in: holder.observations)
 
                 let initialDeadline = ContinuousClock().now + .seconds(2)
                 while (observeCount == 0 || observeTaskCount == 0), ContinuousClock().now < initialDeadline {

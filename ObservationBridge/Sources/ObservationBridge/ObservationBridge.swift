@@ -478,255 +478,676 @@ public struct ObservationOptions: OptionSet, Sendable {
 }
 
 public extension Observable where Self: AnyObject {
-    @discardableResult
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeImpl(
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: self,
+            keyPath: keyPath,
             options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
+            clock: clock,
             isolation: isolation,
             callbackIsolation: onChange.isolation,
-            of: makeKeyPathGetter(keyPath),
-            onChange: makeOnChangeAdapter(onChange)
+            kind: .observeValue,
+            valueType: Value.self
         )
-    }
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
+        let callback: @isolated(any) @Sendable (sending Value) async -> Void = { value in
+            await onChange(value)
+        }
 
-    @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeImpl(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            callbackIsolation: onChange.isolation,
-            of: makeKeyPathGetter(keyPath),
-            onChange: { _ in
-                await onChange()
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeValueCallbackBox<Value> else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeValueCallbackBox<Value>(callback)
+                let handle = observeImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    callbackIsolation: onChange.isolation,
+                    of: getter,
+                    onChange: { value in
+                        await callbackBox.call(value)
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
             }
         )
     }
 
-    @discardableResult
+    func observe<Value: Sendable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: onChange.isolation,
+            kind: .observeVoid,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
+        let callback: @isolated(any) @Sendable () async -> Void = {
+            await onChange()
+        }
+
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    callbackIsolation: onChange.isolation,
+                    of: getter,
+                    onChange: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
+        )
+    }
+
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeTaskImpl(
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
             owner: self,
+            keyPath: keyPath,
             options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
+            clock: clock,
             isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            task: task
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Value.self
         )
-    }
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
+        let callback: @isolated(any) @Sendable (sending Value) async -> Void = task
 
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeTaskImpl(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: makeKeyPathGetter(keyPath),
-            task: { _ in
-                await task()
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeValueCallbackBox<Value> else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeValueCallbackBox<Value>(callback)
+                let handle = observeTaskImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    of: getter,
+                    task: { value in
+                        await callbackBox.call(value)
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
             }
         )
     }
 
-    @discardableResult
+    func observeTask<Value: Sendable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: nil,
+            kind: .observeTaskVoid,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
+        let callback: @isolated(any) @Sendable () async -> Void = task
+
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeTaskImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    of: getter,
+                    task: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
+        )
+    }
+
     func observe(
         _ keyPaths: sending [PartialKeyPath<Self>],
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeImpl(
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.multipleKeyPaths(
             owner: self,
+            keyPaths: keyPaths,
             options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
+            clock: clock,
             isolation: isolation,
             callbackIsolation: onChange.isolation,
-            of: makeAnyKeyPathsTriggerGetter(keyPaths),
-            onChange: { _ in
-                await onChange()
+            kind: .observeTrigger
+        )
+        let getter = observationScopeMakeAnyKeyPathsTriggerGetter(keyPaths)
+        let callback: @isolated(any) @Sendable () async -> Void = {
+            await onChange()
+        }
+
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    callbackIsolation: onChange.isolation,
+                    of: getter,
+                    onChange: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
             }
         )
     }
 
-    @discardableResult
     func observeTask(
         _ keyPaths: sending [PartialKeyPath<Self>],
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        return observeTaskImpl(
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.multipleKeyPaths(
             owner: self,
+            keyPaths: keyPaths,
             options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
+            clock: clock,
             isolation: isolation,
-            of: makeAnyKeyPathsTriggerGetter(keyPaths),
-            task: { _ in
-                await task()
+            callbackIsolation: nil,
+            kind: .observeTaskTrigger
+        )
+        let getter = observationScopeMakeAnyKeyPathsTriggerGetter(keyPaths)
+        let callback: @isolated(any) @Sendable () async -> Void = task
+
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeTaskImpl(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    of: getter,
+                    task: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
             }
         )
     }
 }
 
 public extension Observable where Self: AnyObject {
-    @discardableResult
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: onChange.isolation,
+            kind: .observeValue,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
             producerIsolation: producerIsolation,
             consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:onChange:isolation:)"
+            operation: "observe(_:id:options:clock:onChange:isolation:)"
         )
+        let callback: @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void = { boxedValue in
+            await onChange(boxedValue.value)
+        }
 
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            callbackIsolation: onChange.isolation,
-            of: getter,
-            onChange: makeNonSendableOnChangeAdapter(onChange)
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeNonSendableValueCallbackBox<Value> else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeNonSendableValueCallbackBox<Value>(callback)
+                let handle = observeImplNonSendable(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    callbackIsolation: onChange.isolation,
+                    of: getter,
+                    onChange: { boxedValue in
+                        await callbackBox.call(boxedValue)
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
         )
     }
 
-    @discardableResult
     func observe<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: onChange.isolation,
+            kind: .observeVoid,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
             producerIsolation: producerIsolation,
             consumerIsolation: onChange.isolation,
-            operation: "observe(_:options:clock:onChange:isolation:)"
+            operation: "observe(_:id:options:clock:onChange:isolation:)"
         )
+        let callback: @isolated(any) @Sendable () async -> Void = {
+            await onChange()
+        }
 
-        return observeImplNonSendable(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            callbackIsolation: onChange.isolation,
-            of: getter,
-            onChange: makeNonSendableVoidOnChangeAdapter(onChange)
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeImplNonSendable(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    callbackIsolation: onChange.isolation,
+                    of: getter,
+                    onChange: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
         )
     }
 
-    @discardableResult
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: nil,
+            kind: .observeTaskValue,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
             producerIsolation: producerIsolation,
             consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:task:isolation:)"
+            operation: "observeTask(_:id:options:clock:task:isolation:)"
         )
+        let callback: @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void = { boxedValue in
+            await task(boxedValue.value)
+        }
 
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            task: makeNonSendableTaskAdapter(task)
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeNonSendableValueCallbackBox<Value> else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeNonSendableValueCallbackBox<Value>(callback)
+                let handle = observeTaskImplNonSendable(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    of: getter,
+                    task: { boxedValue in
+                        await callbackBox.call(boxedValue)
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
         )
     }
 
-    @discardableResult
     func observeTask<Value>(
         _ keyPath: sending KeyPath<Self, Value>,
+        id: AnyHashable? = nil,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
-        isolation: isolated (any Actor)? = #isolation
-    ) -> ObservationHandle {
-        let getter = makeKeyPathGetter(keyPath)
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationRegistration {
+        let descriptor = ObservationScopeDescriptor.singleKeyPath(
+            owner: self,
+            keyPath: keyPath,
+            options: options,
+            clock: clock,
+            isolation: isolation,
+            callbackIsolation: nil,
+            kind: .observeTaskVoid,
+            valueType: Value.self
+        )
+        let getter = observationScopeMakeKeyPathGetter(keyPath)
         let producerIsolation = getter.isolation ?? isolation
         preconditionNonSendableSameIsolation(
             producerIsolation: producerIsolation,
             consumerIsolation: task.isolation,
-            operation: "observeTask(_:options:clock:task:isolation:)"
+            operation: "observeTask(_:id:options:clock:task:isolation:)"
         )
+        let callback: @isolated(any) @Sendable () async -> Void = task
 
-        return observeTaskImplNonSendable(
-            owner: self,
-            options: options,
-            rateLimit: options.rateLimitForObservation,
-            rateLimitClock: clock,
-            isolation: isolation,
-            of: getter,
-            task: makeNonSendableVoidTaskAdapter(task)
+        return ObservationRegistration(
+            id: id,
+            descriptor: descriptor,
+            fileID: _fileID,
+            line: _line,
+            column: _column,
+            update: { slot in
+                guard let existing = slot.callbackBox as? ObservationScopeVoidCallbackBox else {
+                    return false
+                }
+                existing.update(callback)
+                return true
+            },
+            makeSlot: { [weak owner = self] in
+                guard let owner else {
+                    return nil
+                }
+                let callbackBox = ObservationScopeVoidCallbackBox(callback)
+                let handle = observeTaskImplNonSendable(
+                    owner: owner,
+                    options: options,
+                    rateLimit: options.rateLimitForObservation,
+                    rateLimitClock: clock,
+                    isolation: isolation,
+                    of: getter,
+                    task: { _ in
+                        await callbackBox.call()
+                    }
+                )
+                return ObservationScopeSlot(
+                    descriptor: descriptor,
+                    owner: owner,
+                    handle: handle,
+                    callbackBox: callbackBox
+                )
+            }
         )
     }
-}
-
-// KeyPath / PartialKeyPath are immutable metadata; wrapping allows safe capture in @Sendable closures.
-private struct _UncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Sendable {
-    let keyPath: KeyPath<Owner, Value>
-}
-
-private struct _UncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked Sendable {
-    let keyPaths: [PartialKeyPath<Owner>]
-}
-
-private struct _UncheckedSendableTypeMarker<Value>: @unchecked Sendable {
-    let valueType: Value.Type
 }
 
 func hasSameObservationIsolation(
@@ -748,70 +1169,6 @@ private func preconditionNonSendableSameIsolation(
         hasSameObservationIsolation(producerIsolation, consumerIsolation),
         "\(operation): non-Sendable observation requires producer and consumer closures to share the same actor isolation"
     )
-}
-
-private func makeKeyPathGetter<Owner: AnyObject, Value>(
-    _ keyPath: sending KeyPath<Owner, Value>
-) -> @isolated(any) @Sendable (Owner) -> Value {
-    let keyPath = _UncheckedSendableKeyPath(keyPath: keyPath)
-    return { owner in
-        owner[keyPath: keyPath.keyPath]
-    }
-}
-
-private func makeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
-    _ keyPaths: sending [PartialKeyPath<Owner>]
-) -> @isolated(any) @Sendable (Owner) -> Void {
-    let keyPaths = _UncheckedSendablePartialKeyPaths(keyPaths: keyPaths)
-    return { owner in
-        for keyPath in keyPaths.keyPaths {
-            _ = owner[keyPath: keyPath]
-        }
-    }
-}
-
-private func makeOnChangeAdapter<Value>(
-    _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-) -> @isolated(any) @Sendable (sending Value) async -> Void {
-    { value in
-        await onChange(value)
-    }
-}
-
-private func makeNonSendableOnChangeAdapter<Value>(
-    _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
-    { boxedValue in
-        await onChange(boxedValue.value)
-    }
-}
-
-private func makeNonSendableVoidOnChangeAdapter<Value>(
-    _ onChange: @escaping @isolated(any) @Sendable () -> Void
-) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
-    let marker = _UncheckedSendableTypeMarker(valueType: Value.self)
-    return { _ in
-        _ = marker
-        await onChange()
-    }
-}
-
-private func makeNonSendableTaskAdapter<Value>(
-    _ task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
-    { boxedValue in
-        await task(boxedValue.value)
-    }
-}
-
-private func makeNonSendableVoidTaskAdapter<Value>(
-    _ task: @escaping @isolated(any) @Sendable () async -> Void
-) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
-    let marker = _UncheckedSendableTypeMarker(valueType: Value.self)
-    return { _ in
-        _ = marker
-        await task()
-    }
 }
 
 enum ResolvedBackend: Sendable {
