@@ -141,6 +141,37 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func repeatedObserveFromSameCallSiteWithDifferentOptionsReplacesPipeline() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<String>()
+        defer { observations.cancelAll() }
+
+        installReplacingObservation(
+            observations: observations,
+            model: model,
+            options: .willSet,
+            label: "will",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(1, in: recorder))
+
+        installReplacingObservation(
+            observations: observations,
+            model: model,
+            options: .didSet,
+            label: "did",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = 1
+        #expect(await waitUntilCount(3, in: recorder))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(recorder.snapshot() == ["will:initial:0", "did:initial:0", "did:didSet:1"])
+    }
+
+    @Test
     func cancelAllStopsLaterEvents() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -241,10 +272,11 @@ final class ObservationScopeObserveTests {
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
+    options: ObservationOptions = .didSet,
     label: String,
     recorder: ValueRecorder<String>
 ) {
-    observations.observe(model) { event, model in
+    observations.observe(model, options: options) { event, model in
         recorder.append("\(label):\(event.kind):\(model.value)")
     }
 }

@@ -36,8 +36,7 @@ public final class ObservationScope {
             fileID: String(describing: _fileID),
             line: _line,
             column: _column,
-            ownerID: ObjectIdentifier(owner),
-            options: options
+            ownerID: ObjectIdentifier(owner)
         )
         let descriptor = ObservationScopeDescriptor(
             owner: owner,
