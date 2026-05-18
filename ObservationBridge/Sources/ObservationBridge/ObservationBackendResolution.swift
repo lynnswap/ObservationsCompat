@@ -1,8 +1,6 @@
-import Observation
 internal import _ObservationBridgeLegacy
 
-enum ResolvedBackend: Sendable {
-    case native
+enum ResolvedBackend: Sendable, Equatable {
     case legacy
 }
 
@@ -173,17 +171,6 @@ private func makeRawObservationStream<Value: Sendable>(
             observe,
             isolation: isolation
         )
-    case .native:
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return makeNativeStream(
-                observe,
-                isolation: isolation
-            )
-        }
-        return makeLegacyObservationStream(
-            observe,
-            isolation: isolation
-        )
     }
 }
 
@@ -192,47 +179,9 @@ func resolveBackend(options: ObservationStreamOptions) -> ResolvedBackend {
         return .legacy
     }
 
-    if #available(iOS 26.0, macOS 26.0, *) {
-        return .native
-    }
+    #if compiler(>=6.4)
+    // TODO: Switch automatic stream observation to native withContinuousObservation
+    // once the Swift 6.4 API is available in the project baseline.
+    #endif
     return .legacy
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func makeNativeStream<Value: Sendable>(
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isolation: (any Actor)?
-) -> AsyncStream<Value> {
-    AsyncStream<Value> { continuation in
-        let task = Task.immediate {
-            await drainNativeObservationValues(
-                observe: observe,
-                isolation: isolation,
-                continuation: continuation
-            )
-
-            continuation.finish()
-        }
-
-        continuation.onTermination = { _ in
-            task.cancel()
-        }
-    }
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func drainNativeObservationValues<Value: Sendable>(
-    observe: @escaping @isolated(any) @Sendable () -> Value,
-    isolation: isolated (any Actor)?,
-    continuation: AsyncStream<Value>.Continuation
-) async {
-    let observations = Observations(observe)
-    var iterator = observations.makeAsyncIterator()
-
-    while let value = await iterator.next(isolation: isolation) {
-        if Task.isCancelled {
-            break
-        }
-        continuation.yield(value)
-    }
 }

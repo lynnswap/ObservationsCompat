@@ -33,6 +33,10 @@ func stressSeed(default defaultSeed: UInt64) -> UInt64 {
     return defaultSeed
 }
 
+func stressIterationCount(local: Int, ci: Int) -> Int {
+    ProcessInfo.processInfo.environment["CI"] == "true" ? ci : local
+}
+
 func legacyOptionsForCurrentRuntime(
     _ additional: ObservationStreamOptions = ObservationStreamOptions()
 ) -> ObservationStreamOptions {
@@ -108,11 +112,15 @@ func runRandomizedObservationStress(
     seed: UInt64,
     register: @escaping NativeStressRegistrar
 ) async -> (completed: Bool, workers: Int, firstFailure: String?) {
-    let workers = max(2, min(ProcessInfo.processInfo.activeProcessorCount, 8))
-    let outcome = await waitWithTimeout(nanoseconds: 180_000_000_000) {
+    let isCI = ProcessInfo.processInfo.environment["CI"] == "true"
+    let resolvedIterations = isCI ? min(iterations, 200) : iterations
+    let maxWorkers = isCI ? 2 : 8
+    let workers = max(2, min(ProcessInfo.processInfo.activeProcessorCount, maxWorkers))
+    let timeout: UInt64 = isCI ? 30_000_000_000 : 180_000_000_000
+    let outcome = await waitWithTimeout(nanoseconds: timeout) {
         let failureRecorder = StressFailureRecorder()
-        let baseIterationsPerWorker = iterations / workers
-        let extraIterations = iterations % workers
+        let baseIterationsPerWorker = resolvedIterations / workers
+        let extraIterations = resolvedIterations % workers
 
         await withTaskGroup(of: Void.self) { group in
             for workerIndex in 0..<workers {

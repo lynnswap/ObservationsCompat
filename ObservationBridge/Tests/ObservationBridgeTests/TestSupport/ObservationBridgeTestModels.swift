@@ -81,6 +81,14 @@ final class NestedCounterModel: @unchecked Sendable {
 @Observable
 final class MainActorCounterModel {
     var value: Int = 0
+    var isEnabled: Bool = false
+    var parity: Int { value % 2 }
+}
+
+@MainActor
+@Observable
+final class MainActorOptionalCounterModel {
+    var value: Int? = nil
 }
 
 @MainActor

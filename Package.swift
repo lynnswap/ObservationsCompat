@@ -20,6 +20,7 @@ let package = Package(
     targets: [
         .target(
             name: "_ObservationBridgeLegacy",
+            dependencies: ["_ObservationBridgePrivateABI"],
             path: "ObservationBridge/Sources/_ObservationBridgeLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

@@ -119,9 +119,9 @@ Available stream configuration:
 
 Backend notes:
 
-- automatic stream observations use native `Observations` on iOS/macOS 26.0+
-- older OS versions fall back to legacy `withObservationTracking`
-- `.legacyBackend` forces the legacy backend on iOS/macOS 26.0+
+- automatic stream observations use the legacy `withObservationTracking` loop on Swift 6.2/6.3
+- native `withContinuousObservation` integration is reserved for Swift 6.4+
+- `.legacyBackend` keeps forcing the legacy backend after native support is added
 - non-`Sendable` stream values use the legacy backend
 
 ## Migration
