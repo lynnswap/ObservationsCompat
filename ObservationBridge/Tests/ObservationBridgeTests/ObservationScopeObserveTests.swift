@@ -20,6 +20,7 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.didSet == .didSet)
         #expect(ObservationEvent.Kind.initial != .didSet)
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
+        #expect(String(describing: ObservationEvent.Kind.legacyWillSet) == "willSet")
     }
 
     @Test

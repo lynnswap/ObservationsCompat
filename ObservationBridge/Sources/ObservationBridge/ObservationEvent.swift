@@ -6,9 +6,7 @@ public struct ObservationEvent: Sendable {
     public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
         private enum RawValue: UInt8, Sendable {
             case initial
-            #if compiler(>=6.4)
             case willSet
-            #endif
             case didSet
         }
 
@@ -32,14 +30,16 @@ public struct ObservationEvent: Sendable {
             Kind(rawValue: .didSet)
         }
 
+        static var legacyWillSet: Kind {
+            Kind(rawValue: .willSet)
+        }
+
         public var description: String {
             switch rawValue {
             case .initial:
                 "initial"
-            #if compiler(>=6.4)
             case .willSet:
                 "willSet"
-            #endif
             case .didSet:
                 "didSet"
             }

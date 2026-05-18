@@ -104,12 +104,6 @@ public struct ObservationOptions: OptionSet, Sendable, Hashable {
         self.rawValue = rawValue
     }
 
-    var legacyChangeKind: ObservationEvent.Kind? {
-        if contains(.didSet) {
-            return .didSet
-        }
-        return nil
-    }
 }
 
 /// Configuration shared by `AsyncSequence` observations.

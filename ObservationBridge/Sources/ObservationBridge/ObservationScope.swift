@@ -179,7 +179,7 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
     var kind = ObservationEvent.Kind.initial
 
     while !Task.isCancelled {
-        let changeKind = options.legacyChangeKind
+        let changeKind = legacyChangeKind(for: options)
 
         guard await trackLegacyScopedObservation(
             ownerToken: ownerToken,
@@ -233,19 +233,13 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
         }
 
         if changeKind == .didSet {
-            let usedDidSetSPI = withObservationTrackingDidSetIfAvailable {
+            guard withObservationTrackingDidSetIfAvailable({
                 callbackBox.call(event: event, owner: owner)
-            } didSet: { tracking in
+            }, didSet: { tracking in
                 state.emitChange()
                 cancelObservationTrackingIfAvailable(tracking)
-            }
-
-            if !usedDidSetSPI {
-                withObservationTracking {
-                    callbackBox.call(event: event, owner: owner)
-                } onChange: {
-                    state.emitChange()
-                }
+            }) else {
+                return false
             }
         } else {
             withObservationTracking {
@@ -257,6 +251,18 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
 
         return !state.isTerminated
     }
+}
+
+private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {
+    guard options.contains(.didSet) else {
+        return nil
+    }
+
+    if canUseObservationTrackingDidSetSPI {
+        return .didSet
+    }
+
+    return .legacyWillSet
 }
 
 private func withObservationIsolation<T: Sendable>(
@@ -287,20 +293,24 @@ private let observationTrackingCancelAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
         .map { UInt(bitPattern: $0) }
 
+private var canUseObservationTrackingDidSetSPI: Bool {
+    #if arch(arm64)
+    observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
+    #else
+    false
+    #endif
+}
+
 private func withObservationTrackingDidSetIfAvailable(
     _ apply: () -> Void,
     didSet: @Sendable (OpaqueObservationTracking) -> Void
 ) -> Bool {
-    #if arch(arm64)
-    guard let observationTrackingDidSetFunction, observationTrackingCancelAddress != nil else {
+    guard canUseObservationTrackingDidSetSPI, let observationTrackingDidSetFunction else {
         return false
     }
 
     observationTrackingDidSetFunction(apply, didSet)
     return true
-    #else
-    return false
-    #endif
 }
 
 private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationTracking) {
