@@ -1,12 +1,13 @@
 import Observation
+import Synchronization
 
 /// Owns owner-bound observations for an explicit lifecycle.
 ///
 /// Call ``observe(_:options:_:isolation:_fileID:_line:_column:)`` at lifecycle boundaries such as
 /// view setup or cell configuration. The scope cancels all stored observations when it is
 /// deallocated.
-public final class ObservationScope {
-    private var slots: [ObservationScopeID: any ObservationScopeSlotProtocol] = [:]
+public final class ObservationScope: @unchecked Sendable {
+    private let slots = Mutex<[ObservationScopeID: any ObservationScopeSlotProtocol]>([:])
 
     /// Creates an empty observation scope.
     public init() {}
@@ -44,7 +45,6 @@ public final class ObservationScope {
             callbackIsolation: apply.isolation
         )
 
-        slots.removeValue(forKey: id)?.cancel()
         let slot = makeObservationSlot(
             owner: owner,
             descriptor: descriptor,
@@ -52,14 +52,20 @@ public final class ObservationScope {
             isolation: observationIsolation,
             apply: apply
         )
-        slots[id] = slot
+        let replacedSlot = slots.withLock { slots in
+            slots.updateValue(slot, forKey: id)
+        }
+        replacedSlot?.cancel()
         slot.start()
     }
 
     /// Cancels every observation currently owned by the scope.
     public func cancelAll() {
-        let currentSlots = Array(slots.values)
-        slots.removeAll(keepingCapacity: true)
+        let currentSlots = slots.withLock { slots in
+            let currentSlots = Array(slots.values)
+            slots.removeAll(keepingCapacity: true)
+            return currentSlots
+        }
 
         for slot in currentSlots {
             slot.cancel()
@@ -207,11 +213,6 @@ private func withObservationIsolation<T: Sendable>(
     isolation: isolated (any Actor)?,
     _ operation: () -> T
 ) -> T {
-    if let isolation {
-        nonisolated(unsafe) let unsafeOperation = operation
-        return isolation.assumeIsolated { _ in
-            unsafe unsafeOperation()
-        }
-    }
+    // The isolated parameter makes the caller hop to `isolation` before this body runs.
     return operation()
 }

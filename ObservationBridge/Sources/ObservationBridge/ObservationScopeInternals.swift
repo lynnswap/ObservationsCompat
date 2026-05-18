@@ -1,13 +1,13 @@
 import Observation
 import Synchronization
 
-struct ObservationScopeID: Hashable {
+struct ObservationScopeID: Hashable, Sendable {
     let fileID: String
     let line: UInt
     let column: UInt
 }
 
-struct ObservationScopeDescriptor: Equatable {
+struct ObservationScopeDescriptor: Equatable, Sendable {
     let ownerID: ObjectIdentifier
     let options: ObservationOptions
     let observationIsolationID: ObjectIdentifier?
@@ -30,7 +30,7 @@ struct ObservationScopeDescriptor: Equatable {
     }
 }
 
-protocol ObservationScopeSlotProtocol: AnyObject {
+protocol ObservationScopeSlotProtocol: AnyObject, Sendable {
     var descriptor: ObservationScopeDescriptor { get }
     var isActive: Bool { get }
 
@@ -41,7 +41,7 @@ protocol ObservationScopeCallbackClearing: Sendable {
     func clear()
 }
 
-final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol {
+final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol, @unchecked Sendable {
     let descriptor: ObservationScopeDescriptor
     let callbackBox: ObservationScopeCallbackBox<Owner>
     private let state: ScopedObservationState

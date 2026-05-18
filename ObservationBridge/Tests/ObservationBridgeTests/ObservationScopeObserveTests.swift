@@ -366,6 +366,30 @@ final class ObservationScopeObserveTests {
         #expect(await waitUntilValues([0, 4], in: probe))
         await probe.cancelAll()
     }
+
+    @Test
+    func observeHopsToExplicitCustomActorIsolation() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let probe = CustomActorObservationProbe()
+        defer { observations.cancelAll() }
+
+        await observations.observe(
+            model,
+            options: .didSet,
+            { _, model in
+                probe.assumeIsolated { isolatedProbe in
+                    isolatedProbe.record(model.value)
+                }
+            },
+            isolation: probe
+        )
+
+        #expect(await waitUntilValues([0], in: probe))
+
+        model.value = 5
+        #expect(await waitUntilValues([0, 5], in: probe))
+    }
 }
 
 private enum ReplacementReadTarget {
@@ -411,6 +435,11 @@ private actor CustomActorObservationProbe {
             self.preconditionIsolated()
             self.values.append(model.value)
         }
+    }
+
+    func record(_ value: Int) {
+        preconditionIsolated()
+        values.append(value)
     }
 
     func snapshot() -> [Int] {
