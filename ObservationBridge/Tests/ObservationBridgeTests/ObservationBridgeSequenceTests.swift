@@ -26,9 +26,7 @@ final class ObservationBridgeSequenceTests {
         model.value = 1
         #expect(await nextWithTimeout(from: queue) == 1)
 
-        await Task.yield()
         model.value = 1
-        await Task.yield()
         model.value = 2
         #expect(await nextWithTimeout(from: queue) == 2)
     }
@@ -113,11 +111,7 @@ final class ObservationBridgeSequenceTests {
     }
 
     @Test
-    func nativeNoRateLimitObservationBridgeIteratorReturnsInitialAndUpdatedValues() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
+    func automaticBackendObservationBridgeIteratorReturnsInitialAndUpdatedValues() async {
         let model = CounterModel()
         let stream = ObservationBridge {
             model.value
@@ -131,11 +125,7 @@ final class ObservationBridgeSequenceTests {
     }
 
     @Test
-    func nativeNoRateLimitMakeObservationBridgeStreamIteratorReturnsInitialAndUpdatedValues() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
+    func automaticBackendMakeObservationBridgeStreamIteratorReturnsInitialAndUpdatedValues() async {
         let model = CounterModel()
         let stream = makeObservationBridgeStream {
             model.value
@@ -149,11 +139,7 @@ final class ObservationBridgeSequenceTests {
     }
 
     @Test
-    func nativeNoRateLimitObservationBridgeBuffersUpdatesWhileConsumerIsBetweenPulls() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
+    func automaticBackendObservationBridgeBuffersUpdatesWhileConsumerIsBetweenPulls() async {
         let model = CounterModel()
         let stream = ObservationBridge {
             model.value
@@ -174,18 +160,13 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 1
-        await Task.yield()
         await releaseConsumer.push(())
 
         #expect(await nextWithTimeout(from: queue) == 1)
     }
 
     @Test
-    func nativeNoRateLimitObservationBridgeIteratorPreservesInitialOptionalNil() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
+    func automaticBackendObservationBridgeIteratorPreservesInitialOptionalNil() async {
         let model = OptionalCounterModel()
         let stream = ObservationBridge {
             model.value
@@ -230,14 +211,16 @@ final class ObservationBridgeSequenceTests {
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
+        let started = ValueQueue<Bool>()
 
         let task = Task<Void, Never> {
             var iterator = stream.makeAsyncIterator()
             _ = await iterator.next()
+            await started.push(true)
             while await iterator.next() != nil {}
         }
 
-        await Task.yield()
+        #expect(await nextWithTimeout(from: started) == true)
         model.value = 1
         let completed = await waitWithTimeout {
             task.cancel()

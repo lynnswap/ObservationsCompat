@@ -7,10 +7,8 @@ import Testing
 @Suite
 final class BackendResolutionTests {
     @Test
-    func defaultBackendFallsBackToLegacyOnUnsupportedOS() async {
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return
-        }
+    func defaultBackendUsesLegacyUntilNativeContinuousObservationBackendExists() async {
+        #expect(resolveBackend(options: ObservationStreamOptions()) == .legacy)
 
         let model = CounterModel()
         let stream = ObservationBridge {

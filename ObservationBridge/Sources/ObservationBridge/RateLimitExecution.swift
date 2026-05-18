@@ -1,5 +1,4 @@
 import AsyncAlgorithms
-import Observation
 import Synchronization
 internal import _ObservationBridgeLegacy
 
@@ -1069,13 +1068,6 @@ func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
 ) async {
     let resolveOwner = WeakOwnerRegistry.ownerAccessor(token: ownerToken)
     let resolvedIsolation = value.isolation ?? isolation
-    // NOTE:
-    // `Observations.Iterator.next(isolation:)` does not rebind `emit` closure isolation.
-    // If the projected closure lost actor metadata (e.g. key path getter composition),
-    // native Observations can evaluate it off-actor and trip dynamic isolation checks.
-    // Legacy path can still execute under `resolvedIsolation`, so bridge there.
-    let requiresLegacyIsolationBridge = resolvedIsolation != nil && value.isolation == nil
-
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<Value> = {
         guard let owner = resolveOwner() as? Owner else {
             return .ownerGone
@@ -1089,17 +1081,6 @@ func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     }
 
     switch resolveBackend(options: options) {
-    case .native:
-        if #available(iOS 26.0, macOS 26.0, *),
-           !requiresLegacyIsolationBridge {
-            await forEachNativeEmission(
-                observeOwnerValue,
-                isolation: resolvedIsolation,
-                consume: consume
-            )
-            return
-        }
-        fallthrough
     case .legacy:
         await forEachLegacyObservationEmission(
             observeOwnerValue,
@@ -1109,38 +1090,6 @@ func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
                 return false
             }
             return await consume(emission)
-        }
-    }
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func forEachNativeEmission<Value: Sendable>(
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> OwnerValueEmission<Value>,
-    isolation: (any Actor)?,
-    consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
-) async {
-    await drainNativeOwnerValueEmissions(
-        observe: observe,
-        isolation: isolation,
-        consume: consume
-    )
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func drainNativeOwnerValueEmissions<Value: Sendable>(
-    observe: @escaping @isolated(any) @Sendable () -> OwnerValueEmission<Value>,
-    isolation: isolated (any Actor)?,
-    consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
-) async {
-    let observations = Observations(observe)
-    var iterator = observations.makeAsyncIterator()
-
-    while let value = await iterator.next(isolation: isolation) {
-        guard !Task.isCancelled else {
-            break
-        }
-        guard await consume(value) else {
-            break
         }
     }
 }

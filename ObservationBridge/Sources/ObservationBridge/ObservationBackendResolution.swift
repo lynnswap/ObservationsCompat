@@ -1,8 +1,6 @@
-import Observation
 internal import _ObservationBridgeLegacy
 
-enum ResolvedBackend: Sendable {
-    case native
+enum ResolvedBackend: Sendable, Equatable {
     case legacy
 }
 
@@ -173,17 +171,6 @@ private func makeRawObservationStream<Value: Sendable>(
             observe,
             isolation: isolation
         )
-    case .native:
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return makeNativeStream(
-                observe,
-                isolation: isolation
-            )
-        }
-        return makeLegacyObservationStream(
-            observe,
-            isolation: isolation
-        )
     }
 }
 
@@ -192,58 +179,9 @@ func resolveBackend(options: ObservationStreamOptions) -> ResolvedBackend {
         return .legacy
     }
 
-    if #available(iOS 26.0, macOS 26.0, *) {
-        return .native
-    }
+    #if compiler(>=6.4)
+    #error("Implement the native withContinuousObservation stream backend before changing automatic backend resolution")
+    #endif
+
     return .legacy
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func makeNativeStream<Value: Sendable>(
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isolation: (any Actor)?
-) -> AsyncStream<Value> {
-    AsyncStream<Value> { continuation in
-        let task = Task.immediate {
-            await drainNativeObservationValues(
-                observe: observe,
-                isolation: isolation,
-                continuation: continuation
-            )
-
-            continuation.finish()
-        }
-
-        continuation.onTermination = { _ in
-            task.cancel()
-        }
-    }
-}
-
-@available(iOS 26.0, macOS 26.0, *)
-private func drainNativeObservationValues<Value: Sendable>(
-    observe: @escaping @isolated(any) @Sendable () -> Value,
-    isolation: isolated (any Actor)?,
-    continuation: AsyncStream<Value>.Continuation
-) async {
-    let observations = Observations(observe)
-    // Start the next native observation before publishing the current value. `AsyncStream`
-    // may resume a waiting consumer synchronously from `yield`, so registering afterward
-    // can lose mutations made by that consumer. The pending task is the sole owner of the
-    // iterator until its value is awaited below.
-    nonisolated(unsafe) var iterator = observations.makeAsyncIterator()
-    let resolvedIsolation: (any Actor)? = isolation
-
-    var nextValue = unsafe await iterator.next(isolation: isolation)
-    while let value = nextValue {
-        let pendingValue = Task {
-            unsafe await iterator.next(isolation: resolvedIsolation)
-        }
-        if Task.isCancelled {
-            pendingValue.cancel()
-            break
-        }
-        continuation.yield(value)
-        nextValue = await pendingValue.value
-    }
 }
