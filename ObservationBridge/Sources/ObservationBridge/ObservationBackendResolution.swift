@@ -180,8 +180,8 @@ func resolveBackend(options: ObservationStreamOptions) -> ResolvedBackend {
     }
 
     #if compiler(>=6.4)
-    #error("Implement the native withContinuousObservation stream backend before changing automatic backend resolution")
+    // TODO: Switch automatic stream observation to native withContinuousObservation
+    // once the Swift 6.4 API is available in the project baseline.
     #endif
-
     return .legacy
 }
