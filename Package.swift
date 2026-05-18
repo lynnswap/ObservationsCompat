@@ -28,8 +28,13 @@ let package = Package(
             ]
         ),
         .target(
+            name: "_ObservationBridgePrivateABI",
+            path: "ObservationBridge/Sources/_ObservationBridgePrivateABI"
+        ),
+        .target(
             name: "ObservationBridge",
             dependencies: [
+                "_ObservationBridgePrivateABI",
                 "_ObservationBridgeLegacy",
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
             ],

@@ -7,7 +7,7 @@ private final class ObservationBridgeStreamFactory<Value>: Sendable {
 }
 
 private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable {
-    let options: ObservationOptions
+    let options: ObservationStreamOptions
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
     let rateLimit: ObservationRateLimit?
@@ -25,7 +25,7 @@ private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable
 }
 
 private struct ObservationBridgeStreamBuilder<Value>: Sendable {
-    let options: ObservationOptions
+    let options: ObservationStreamOptions
     let observe: @isolated(any) @Sendable () -> Value
     let capturedIsolation: (any Actor)?
     let rateLimit: ObservationRateLimit?
@@ -86,7 +86,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
     ///   - clock: The clock used for debounce or throttle timing. Defaults to `ContinuousClock`.
     ///   - observe: A closure that reads the value to observe.
     public init(
-        options: ObservationOptions,
+        options: ObservationStreamOptions,
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
@@ -114,7 +114,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            options: ObservationOptions(),
+            options: ObservationStreamOptions(),
             observe
         )
     }
@@ -130,7 +130,7 @@ public extension ObservationBridge where Value: Sendable {
     ///   - clock: The clock used for debounce or throttle timing. Defaults to `ContinuousClock`.
     ///   - observe: A closure that reads the value to observe.
     init(
-        options: ObservationOptions,
+        options: ObservationStreamOptions,
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
@@ -153,7 +153,7 @@ public extension ObservationBridge where Value: Sendable {
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            options: ObservationOptions(),
+            options: ObservationStreamOptions(),
             observe
         )
     }
@@ -187,7 +187,7 @@ public func makeObservationBridgeStream<Value: Sendable>(
 ///   - observe: A closure that reads the value to observe.
 /// - Returns: A sequence that creates an observation pipeline for each iterator.
 public func makeObservationBridgeStream<Value>(
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationBridge<Value> {
@@ -206,7 +206,7 @@ public func makeObservationBridgeStream<Value>(
 ///   - observe: A closure that reads the value to observe.
 /// - Returns: A sequence that creates an observation pipeline for each iterator.
 public func makeObservationBridgeStream<Value: Sendable>(
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationBridge<Value> {

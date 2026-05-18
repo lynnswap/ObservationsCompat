@@ -7,7 +7,7 @@ enum ResolvedBackend: Sendable {
 }
 
 func makeObservationStream<Value: Sendable>(
-    options: ObservationOptions = ObservationOptions(),
+    options: ObservationStreamOptions = ObservationStreamOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     rateLimit: ObservationRateLimit? = nil,
@@ -29,7 +29,7 @@ func makeObservationStream<Value: Sendable>(
 }
 
 func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
-    options: ObservationOptions = ObservationOptions(),
+    options: ObservationStreamOptions = ObservationStreamOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     rateLimit: ObservationRateLimit? = nil,
@@ -51,7 +51,7 @@ func makeObservationStreamFromCapturedIsolation<Value: Sendable>(
 }
 
 func makeObservationStream<Value>(
-    options: ObservationOptions = ObservationOptions(),
+    options: ObservationStreamOptions = ObservationStreamOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: isolated (any Actor)? = #isolation,
     rateLimit: ObservationRateLimit? = nil,
@@ -102,7 +102,7 @@ func makeObservationStream<Value>(
 }
 
 func makeObservationStreamFromCapturedIsolation<Value>(
-    options: ObservationOptions = ObservationOptions(),
+    options: ObservationStreamOptions = ObservationStreamOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     capturedIsolation: (any Actor)?,
     rateLimit: ObservationRateLimit? = nil,
@@ -163,7 +163,7 @@ func makeObservationStreamFromCapturedIsolation<Value>(
 }
 
 private func makeRawObservationStream<Value: Sendable>(
-    options: ObservationOptions = ObservationOptions(),
+    options: ObservationStreamOptions = ObservationStreamOptions(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isolation: (any Actor)?
 ) -> AsyncStream<Value> {
@@ -187,7 +187,7 @@ private func makeRawObservationStream<Value: Sendable>(
     }
 }
 
-func resolveBackend(options: ObservationOptions) -> ResolvedBackend {
+func resolveBackend(options: ObservationStreamOptions) -> ResolvedBackend {
     if options.forcesLegacyBackend {
         return .legacy
     }

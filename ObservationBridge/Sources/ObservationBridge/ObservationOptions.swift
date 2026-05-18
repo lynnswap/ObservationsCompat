@@ -84,15 +84,37 @@ public enum ObservationBackend: Sendable, Hashable {
     case legacy
 }
 
-/// Configuration shared by callback, task, and `AsyncSequence` observations.
-public struct ObservationOptions: Sendable, Hashable {
+/// Options for owner-bound observation callbacks.
+public struct ObservationOptions: OptionSet, Sendable, Hashable {
+    public let rawValue: UInt8
+
+    #if compiler(>=6.4)
+    /// Re-runs the observation callback when observed state is about to change.
+    @available(*, unavailable, message: "ObservationOptions.willSet is reserved for the Swift 6.4 native backend.")
+    public static let willSet = ObservationOptions(rawValue: 1 << 0)
+    #endif
+
+    /// Re-runs the observation callback after observed state changes.
+    public static let didSet = ObservationOptions(rawValue: 1 << 1)
+
+    /// Creates observation options from a raw value.
+    ///
+    /// An empty option set delivers only the initial observation callback.
+    public init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+}
+
+/// Configuration shared by `AsyncSequence` observations.
+public struct ObservationStreamOptions: Sendable, Hashable {
     /// The optional rate-limit configuration applied before values reach the consumer.
-    public let rateLimit: ObservationRateLimit?
+    public var rateLimit: ObservationRateLimit?
 
     /// The backend selection strategy for the observation pipeline.
-    public let backend: ObservationBackend
+    public var backend: ObservationBackend
 
-    /// Creates observation options.
+    /// Creates stream observation options.
     ///
     /// - Parameters:
     ///   - rateLimit: The optional rate-limit configuration applied to emitted values.
@@ -107,14 +129,14 @@ public struct ObservationOptions: Sendable, Hashable {
 
     /// Options that force the legacy `withObservationTracking` backend.
     @available(iOS 26.0, macOS 26.0, *)
-    public static let legacyBackend = ObservationOptions(backend: .legacy)
+    public static let legacyBackend = ObservationStreamOptions(backend: .legacy)
 
     /// Creates options that apply the supplied rate-limit configuration.
     ///
     /// - Parameter configuration: The rate-limit configuration to apply.
     /// - Returns: Options with the rate limit set and the backend left automatic.
-    public static func rateLimit(_ configuration: ObservationRateLimit) -> ObservationOptions {
-        ObservationOptions(rateLimit: configuration)
+    public static func rateLimit(_ configuration: ObservationRateLimit) -> ObservationStreamOptions {
+        ObservationStreamOptions(rateLimit: configuration)
     }
 
     var forcesLegacyBackend: Bool {

@@ -58,218 +58,72 @@ final class ObservationExecutionLifetime: Sendable {
     }
 }
 
+final class ObservationTaskBox: Sendable {
+    private struct State {
+        var isFinished = false
+        var task: Task<Void, Never>?
+    }
+
+    private struct Replacement {
+        var tasksToCancel: [Task<Void, Never>]
+        var installed: Bool
+    }
+
+    private let state = Mutex(State())
+
+    @discardableResult
+    func replace(with newTask: Task<Void, Never>?) -> Bool {
+        let replacement = state.withLock { state in
+            if state.isFinished {
+                let oldTask = state.task
+                state.task = nil
+                return Replacement(
+                    tasksToCancel: [oldTask, newTask].compactMap { $0 },
+                    installed: false
+                )
+            }
+
+            let oldTask = state.task
+            state.task = newTask
+            return Replacement(
+                tasksToCancel: [oldTask].compactMap { $0 },
+                installed: true
+            )
+        }
+        for task in replacement.tasksToCancel {
+            task.cancel()
+        }
+        return replacement.installed
+    }
+
+    func cancel() {
+        let taskToCancel = state.withLock { state in
+            let task = state.task
+            state.task = nil
+            return task
+        }
+        taskToCancel?.cancel()
+    }
+
+    func finish() {
+        let taskToCancel = state.withLock { state in
+            if state.isFinished {
+                return nil as Task<Void, Never>?
+            }
+
+            state.isFinished = true
+            let task = state.task
+            state.task = nil
+            return task
+        }
+        taskToCancel?.cancel()
+    }
+}
+
 final class _UncheckedSendableValueBox<Value>: @unchecked Sendable {
     let value: Value
 
     init(_ value: Value) {
         self.value = value
     }
-}
-
-func observeImpl<Owner: AnyObject, Value: Sendable>(
-    owner: Owner,
-    options: ObservationOptions,
-    rateLimit: ObservationRateLimit?,
-    rateLimitClock: any Clock<Duration>,
-    isolation: (any Actor)?,
-    callbackIsolation: (any Actor)?,
-    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
-    @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-) -> ObservationHandle {
-    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-    let lifetime = ObservationExecutionLifetime()
-    lifetime.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
-    }
-    let monitorTask = makeObservationTask {
-        defer {
-            lifetime.cancel()
-        }
-
-        if let rateLimit {
-            switch rateLimit {
-            case let .debounce(debounce) where debounce.mode == .delayedFirst:
-                let observedValues = makeObservedValueChannel(
-                    ownerToken: ownerToken,
-                    options: options,
-                    isolation: isolation,
-                    of: value
-                )
-                lifetime.addCancellationHandler {
-                    observedValues.producerTask.cancel()
-                    observedValues.channel.finish()
-                }
-                let rateLimitedValues = makeRateLimitedValueStream(
-                    observedValues.channel,
-                    rateLimit: rateLimit,
-                    rateLimitClock: rateLimitClock
-                )
-                for await observedValue in rateLimitedValues {
-                    guard !Task.isCancelled else {
-                        break
-                    }
-                    await onChange(observedValue)
-                }
-            case let .debounce(debounce):
-                await forEachImmediateFirstDebouncedOwnerValue(
-                    ownerToken: ownerToken,
-                    options: options,
-                    isolation: isolation,
-                    of: value,
-                    debounce: debounce,
-                    debounceClock: rateLimitClock,
-                    emitFirstInline: callbackIsolation == nil
-                ) { observedValue in
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            case let .throttle(throttle):
-                await forEachThrottledOwnerValue(
-                    ownerToken: ownerToken,
-                    options: options,
-                    isolation: isolation,
-                    of: value,
-                    throttle: throttle,
-                    throttleClock: rateLimitClock,
-                    emitReadyValuesInline: callbackIsolation == nil
-                ) { observedValue in
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            }
-        } else {
-            await forEachOwnerValueEmission(
-                ownerToken: ownerToken,
-                options: options,
-                isolation: isolation,
-                of: value
-            ) { emission in
-                switch emission {
-                case .ownerGone:
-                    return false
-                case .value(let observedValue):
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            }
-        }
-    }
-
-    let handle = ObservationHandle {
-        monitorTask.cancel()
-        lifetime.cancel()
-    }
-
-    OwnerCancellationRegistry.register(handle, owner: owner)
-    return handle
-}
-
-func observeImplNonSendable<Owner: AnyObject, Value>(
-    owner: Owner,
-    options: ObservationOptions,
-    rateLimit: ObservationRateLimit?,
-    rateLimitClock: any Clock<Duration>,
-    isolation: (any Actor)?,
-    callbackIsolation: (any Actor)?,
-    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
-    @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
-) -> ObservationHandle {
-    _ = options
-
-    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-    let lifetime = ObservationExecutionLifetime()
-    lifetime.addCancellationHandler {
-        WeakOwnerRegistry.removeToken(ownerToken)
-    }
-    let monitorTask = makeObservationTask {
-        defer {
-            lifetime.cancel()
-        }
-
-        if let rateLimit {
-            switch rateLimit {
-            case let .debounce(debounce) where debounce.mode == .delayedFirst:
-                let observedValues = makeObservedValueStreamNonSendable(
-                    ownerToken: ownerToken,
-                    isolation: isolation,
-                    of: value
-                )
-                let rateLimitedValues = makeRateLimitedValueStreamNonSendable(
-                    observedValues,
-                    rateLimit: rateLimit,
-                    rateLimitClock: rateLimitClock
-                )
-                for await observedValue in rateLimitedValues {
-                    guard !Task.isCancelled else {
-                        break
-                    }
-                    await onChange(_UncheckedSendableValueBox(observedValue))
-                }
-            case let .debounce(debounce):
-                await forEachImmediateFirstDebouncedOwnerValueNonSendable(
-                    ownerToken: ownerToken,
-                    isolation: isolation,
-                    of: value,
-                    debounce: debounce,
-                    debounceClock: rateLimitClock,
-                    emitFirstInline: callbackIsolation == nil
-                ) { observedValue in
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            case let .throttle(throttle):
-                await forEachThrottledOwnerValueNonSendable(
-                    ownerToken: ownerToken,
-                    isolation: isolation,
-                    of: value,
-                    throttle: throttle,
-                    throttleClock: rateLimitClock,
-                    emitReadyValuesInline: callbackIsolation == nil
-                ) { observedValue in
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            }
-        } else {
-            await forEachOwnerValueEmissionNonSendable(
-                ownerToken: ownerToken,
-                isolation: isolation,
-                of: value
-            ) { emission in
-                switch emission {
-                case .ownerGone:
-                    return false
-                case .value(let observedValue):
-                    guard !Task.isCancelled else {
-                        return false
-                    }
-                    await onChange(observedValue)
-                    return !Task.isCancelled
-                }
-            }
-        }
-    }
-
-    let handle = ObservationHandle {
-        monitorTask.cancel()
-        lifetime.cancel()
-    }
-
-    OwnerCancellationRegistry.register(handle, owner: owner)
-    return handle
 }

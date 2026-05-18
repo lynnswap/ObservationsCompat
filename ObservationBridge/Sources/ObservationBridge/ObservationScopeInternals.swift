@@ -1,137 +1,28 @@
+import Observation
 import Synchronization
 
-protocol ObservationScopeCallbackBox: AnyObject, Sendable {
-    func clear()
+struct ObservationScopeID: Hashable, Sendable {
+    let fileID: String
+    let line: UInt
+    let column: UInt
 }
 
-final class ObservationScopeSlot {
-    let descriptor: ObservationScopeDescriptor
-    let callbackBox: any ObservationScopeCallbackBox
-    private let ownerReference: ObservationScopeWeakOwnerReference
-    private let handle: ObservationHandle
-
-    init(
-        descriptor: ObservationScopeDescriptor,
-        owner: AnyObject,
-        handle: ObservationHandle,
-        callbackBox: any ObservationScopeCallbackBox
-    ) {
-        self.descriptor = descriptor
-        self.ownerReference = ObservationScopeWeakOwnerReference(owner: owner)
-        self.handle = handle
-        self.callbackBox = callbackBox
-
-        handle.addCancellationHandler { [callbackBox] in
-            callbackBox.clear()
-        }
-    }
-
-    func matches(_ descriptor: ObservationScopeDescriptor) -> Bool {
-        ownerReference.owner != nil && self.descriptor == descriptor
-    }
-
-    func cancel() {
-        handle.cancel()
-    }
-}
-
-private final class ObservationScopeWeakOwnerReference {
-    weak var owner: AnyObject?
-
-    init(owner: AnyObject) {
-        self.owner = owner
-    }
-}
-
-final class ObservationScopeDeclaration {
-    let id: AnyHashable
-    let descriptor: ObservationScopeDescriptor
-    let update: (ObservationScopeSlot) -> Bool
-    let makeSlot: () -> ObservationScopeSlot?
-
-    init(
-        id: AnyHashable,
-        descriptor: ObservationScopeDescriptor,
-        update: @escaping (ObservationScopeSlot) -> Bool,
-        makeSlot: @escaping () -> ObservationScopeSlot?
-    ) {
-        self.id = id
-        self.descriptor = descriptor
-        self.update = update
-        self.makeSlot = makeSlot
-    }
-}
-
-enum ObservationScopeKind: Hashable {
-    case observeValue
-    case observeVoid
-    case observeTaskValue
-    case observeTaskVoid
-    case observeTrigger
-    case observeTaskTrigger
-}
-
-struct ObservationScopeDescriptor: Equatable {
+struct ObservationScopeDescriptor: Equatable, Sendable {
     let ownerID: ObjectIdentifier
-    let keyPaths: [AnyKeyPath]
     let options: ObservationOptions
-    let clockIdentity: ObservationScopeClockIdentity?
-    let isolationID: ObjectIdentifier?
+    let observationIsolationID: ObjectIdentifier?
     let callbackIsolationID: ObjectIdentifier?
-    let kind: ObservationScopeKind
-    let valueTypeID: ObjectIdentifier?
 
-    static func singleKeyPath<Owner: AnyObject, Value>(
-        owner: Owner,
-        keyPath: KeyPath<Owner, Value>,
+    init(
+        owner: AnyObject,
         options: ObservationOptions,
-        clock: any Clock<Duration>,
-        isolation: (any Actor)?,
-        callbackIsolation: (any Actor)?,
-        kind: ObservationScopeKind,
-        valueType: Value.Type
-    ) -> ObservationScopeDescriptor {
-        ObservationScopeDescriptor(
-            ownerID: ObjectIdentifier(owner),
-            keyPaths: [keyPath],
-            options: options,
-            clockIdentity: clockIdentity(for: clock, options: options),
-            isolationID: actorID(isolation),
-            callbackIsolationID: actorID(callbackIsolation),
-            kind: kind,
-            valueTypeID: ObjectIdentifier(valueType)
-        )
-    }
-
-    static func multipleKeyPaths<Owner: AnyObject>(
-        owner: Owner,
-        keyPaths: [PartialKeyPath<Owner>],
-        options: ObservationOptions,
-        clock: any Clock<Duration>,
-        isolation: (any Actor)?,
-        callbackIsolation: (any Actor)?,
-        kind: ObservationScopeKind
-    ) -> ObservationScopeDescriptor {
-        ObservationScopeDescriptor(
-            ownerID: ObjectIdentifier(owner),
-            keyPaths: keyPaths,
-            options: options,
-            clockIdentity: clockIdentity(for: clock, options: options),
-            isolationID: actorID(isolation),
-            callbackIsolationID: actorID(callbackIsolation),
-            kind: kind,
-            valueTypeID: nil
-        )
-    }
-
-    private static func clockIdentity(
-        for clock: any Clock<Duration>,
-        options: ObservationOptions
-    ) -> ObservationScopeClockIdentity? {
-        guard options.rateLimit != nil else {
-            return nil
-        }
-        return ObservationScopeClockIdentity(clock)
+        observationIsolation: (any Actor)?,
+        callbackIsolation: (any Actor)?
+    ) {
+        self.ownerID = ObjectIdentifier(owner)
+        self.options = options
+        self.observationIsolationID = Self.actorID(observationIsolation)
+        self.callbackIsolationID = Self.actorID(callbackIsolation)
     }
 
     private static func actorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
@@ -139,131 +30,103 @@ struct ObservationScopeDescriptor: Equatable {
     }
 }
 
-enum ObservationScopeClockIdentity: Equatable {
-    case stateless(typeID: ObjectIdentifier)
-    case object(typeID: ObjectIdentifier, objectID: ObjectIdentifier)
-    case hashable(typeID: ObjectIdentifier, value: AnyHashable)
-    case unique(typeID: ObjectIdentifier, token: ObservationScopeClockIdentityToken)
+protocol ObservationScopeSlotProtocol: AnyObject, Sendable {
+    var descriptor: ObservationScopeDescriptor { get }
+    var isActive: Bool { get }
 
-    init(_ clock: any Clock<Duration>) {
-        let clockType = type(of: clock)
-        let typeID = ObjectIdentifier(clockType)
-
-        if clockType is AnyObject.Type {
-            self = .object(typeID: typeID, objectID: ObjectIdentifier(clock as AnyObject))
-        } else if clock is ContinuousClock || clock is SuspendingClock {
-            self = .stateless(typeID: typeID)
-        } else if let hashableClock = clock as? any Hashable {
-            self = .hashable(typeID: typeID, value: AnyHashable(hashableClock))
-        } else {
-            self = .unique(typeID: typeID, token: ObservationScopeClockIdentityToken())
-        }
-    }
+    func reserveStart() -> (@Sendable () -> Void)?
+    func cancel()
 }
 
-final class ObservationScopeClockIdentityToken: Equatable {
-    static func == (
-        lhs: ObservationScopeClockIdentityToken,
-        rhs: ObservationScopeClockIdentityToken
-    ) -> Bool {
-        lhs === rhs
-    }
+protocol ObservationScopeCallbackClearing: Sendable {
+    func clear()
 }
 
-private struct ObservationScopeAutomaticID: Hashable {
-    let fileID: String
-    let line: UInt
-    let column: UInt
-    let ownerID: ObjectIdentifier
-    let keyPaths: [AnyKeyPath]
-    let options: ObservationOptions
-    let isolationID: ObjectIdentifier?
-    let callbackIsolationID: ObjectIdentifier?
-    let kind: ObservationScopeKind
-    let valueTypeID: ObjectIdentifier?
-}
+final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol, @unchecked Sendable {
+    let descriptor: ObservationScopeDescriptor
+    let callbackBox: ObservationScopeCallbackBox<Owner>
+    private let state: ScopedObservationState
+    private let handle: ObservationHandle
+    private let taskBox: ObservationTaskBox
+    private let startOperation: Mutex<(@Sendable () -> Task<Void, Never>)?>
 
-func observationScopeResolvedID(
-    _ id: AnyHashable?,
-    descriptor: ObservationScopeDescriptor,
-    fileID: StaticString,
-    line: UInt,
-    column: UInt
-) -> AnyHashable {
-    if let id {
-        return id
+    var isActive: Bool {
+        !state.isTerminated
     }
 
-    return AnyHashable(
-        ObservationScopeAutomaticID(
-            fileID: String(describing: fileID),
-            line: line,
-            column: column,
-            ownerID: descriptor.ownerID,
-            keyPaths: descriptor.keyPaths,
-            options: descriptor.options,
-            isolationID: descriptor.isolationID,
-            callbackIsolationID: descriptor.callbackIsolationID,
-            kind: descriptor.kind,
-            valueTypeID: descriptor.valueTypeID
-        )
-    )
-}
+    init(
+        descriptor: ObservationScopeDescriptor,
+        state: ScopedObservationState,
+        handle: ObservationHandle,
+        taskBox: ObservationTaskBox,
+        callbackBox: ObservationScopeCallbackBox<Owner>,
+        startOperation: @escaping @Sendable () -> Task<Void, Never>
+    ) {
+        self.descriptor = descriptor
+        self.state = state
+        self.handle = handle
+        self.taskBox = taskBox
+        self.callbackBox = callbackBox
+        self.startOperation = Mutex(startOperation)
 
-final class ObservationScopeValueCallbackBox<Value: Sendable>: ObservationScopeCallbackBox, @unchecked Sendable {
-    private struct State: Sendable {
-        var callback: @isolated(any) @Sendable (sending Value) async -> Void
-    }
-
-    private let state: Mutex<State>
-
-    init(_ callback: @escaping @isolated(any) @Sendable (sending Value) async -> Void) {
-        state = Mutex(State(callback: callback))
-    }
-
-    func snapshot() -> @isolated(any) @Sendable (sending Value) async -> Void {
-        state.withLock { state in
-            state.callback
+        handle.addCancellationHandler { [callbackBox] in
+            callbackBox.clear()
         }
     }
 
-    func update(_ callback: @escaping @isolated(any) @Sendable (sending Value) async -> Void) {
-        state.withLock { state in
-            state.callback = callback
+    func reserveStart() -> (@Sendable () -> Void)? {
+        guard let operation = startOperation.withLock({ state in
+            let operation = state
+            state = nil
+            return operation
+        }) else {
+            return nil
+        }
+
+        guard isActive else {
+            return nil
+        }
+
+        return { [state, taskBox] in
+            guard !state.isTerminated else {
+                return
+            }
+
+            let task = operation()
+            taskBox.replace(with: task)
         }
     }
 
-    func clear() {
-        update { _ in }
+    func start() {
+        reserveStart()?()
     }
 
-    func call(_ value: sending Value) async {
-        let callback = snapshot()
-        await callback(value)
+    func cancel() {
+        handle.cancel()
     }
 }
 
-final class ObservationScopeNonSendableValueCallbackBox<Value>: ObservationScopeCallbackBox, @unchecked Sendable {
+final class ObservationScopeCallbackBox<Owner: AnyObject>: @unchecked Sendable {
     private struct State {
-        var callback: @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
+        var callback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     }
 
     private let state: Mutex<State>
 
     init(
-        _ callback: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
+        _ callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     ) {
         state = Mutex(State(callback: callback))
     }
 
-    func snapshot() -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
+    func snapshot() -> @isolated(any) @Sendable (ObservationEvent, Owner) -> Void {
         state.withLock { state in
             state.callback
         }
     }
 
     func update(
-        _ callback: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
+        _ callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     ) {
         state.withLock { state in
             state.callback = callback
@@ -271,72 +134,160 @@ final class ObservationScopeNonSendableValueCallbackBox<Value>: ObservationScope
     }
 
     func clear() {
-        update { _ in }
+        update { _, _ in }
     }
 
-    func call(_ value: sending _UncheckedSendableValueBox<Value>) async {
+    func call(event: ObservationEvent, owner: Owner) {
         let callback = snapshot()
-        await callback(value)
+        callObservationCallback(callback, event, owner)
     }
 }
 
-final class ObservationScopeVoidCallbackBox: ObservationScopeCallbackBox, @unchecked Sendable {
-    private struct State: Sendable {
-        var callback: @isolated(any) @Sendable () async -> Void
+extension ObservationScopeCallbackBox: ObservationScopeCallbackClearing {}
+
+protocol ScopedObservationRunner: Sendable {
+    func run(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: (any Actor)?,
+        state: ScopedObservationState
+    ) async
+}
+
+final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
+    private let callbackBox: ObservationScopeCallbackBox<Owner>
+
+    init(callbackBox: ObservationScopeCallbackBox<Owner>) {
+        self.callbackBox = callbackBox
     }
 
-    private let state: Mutex<State>
+    func run(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: (any Actor)?,
+        state: ScopedObservationState
+    ) async {
+        await runScopedObservationLoop(
+            ownerToken: ownerToken,
+            options: options,
+            isolation: isolation,
+            state: state,
+            callbackBox: callbackBox
+        )
+    }
+}
 
-    init(_ callback: @escaping @isolated(any) @Sendable () async -> Void) {
-        state = Mutex(State(callback: callback))
+final class ScopedObservationState: @unchecked Sendable {
+    private struct State {
+        var dirty = false
+        var terminated = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
     }
 
-    func snapshot() -> @isolated(any) @Sendable () async -> Void {
+    private enum WaitSetup {
+        case changed
+        case terminated
+        case wait
+    }
+
+    private let state = Mutex(State())
+
+    var isTerminated: Bool {
         state.withLock { state in
-            state.callback
+            state.terminated
         }
     }
 
-    func update(_ callback: @escaping @isolated(any) @Sendable () async -> Void) {
-        state.withLock { state in
-            state.callback = callback
+    func emitChange() {
+        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard !state.terminated else {
+                return []
+            }
+
+            if state.waiters.isEmpty {
+                state.dirty = true
+                return []
+            }
+
+            let continuations = state.waiters
+            state.waiters.removeAll(keepingCapacity: true)
+            return continuations
+        }
+
+        for continuation in continuations {
+            continuation.resume()
         }
     }
 
-    func clear() {
-        update {}
+    func terminate() {
+        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard !state.terminated else {
+                return []
+            }
+
+            state.terminated = true
+            state.dirty = false
+            let continuations = state.waiters
+            state.waiters.removeAll(keepingCapacity: true)
+            return continuations
+        }
+
+        for continuation in continuations {
+            continuation.resume()
+        }
     }
 
-    func call() async {
-        let callback = snapshot()
-        await callback()
-    }
-}
+    func waitForChange() async -> Bool {
+        let setup = state.withLock { state -> WaitSetup in
+            if state.terminated {
+                return .terminated
+            }
+            if state.dirty {
+                state.dirty = false
+                return .changed
+            }
+            return .wait
+        }
 
-func observationScopeMakeKeyPathGetter<Owner: AnyObject, Value>(
-    _ keyPath: KeyPath<Owner, Value>
-) -> @isolated(any) @Sendable (Owner) -> Value {
-    let keyPath = ObservationScopeUncheckedSendableKeyPath(keyPath: keyPath)
-    return { owner in
-        owner[keyPath: keyPath.keyPath]
-    }
-}
+        switch setup {
+        case .changed:
+            return true
+        case .terminated:
+            return false
+        case .wait:
+            break
+        }
 
-func observationScopeMakeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
-    _ keyPaths: [PartialKeyPath<Owner>]
-) -> @isolated(any) @Sendable (Owner) -> Void {
-    let keyPaths = ObservationScopeUncheckedSendablePartialKeyPaths(keyPaths: keyPaths)
-    return { owner in
-        for keyPath in keyPaths.keyPaths {
-            _ = owner[keyPath: keyPath]
+        await withCheckedContinuation { continuation in
+            let immediate = state.withLock { state -> CheckedContinuation<Void, Never>? in
+                if state.terminated {
+                    return continuation
+                }
+                if state.dirty {
+                    state.dirty = false
+                    return continuation
+                }
+                state.waiters.append(continuation)
+                return nil
+            }
+            immediate?.resume()
+        }
+
+        return state.withLock { state in
+            !state.terminated
         }
     }
 }
 
-private struct ObservationScopeUncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Sendable {
-    let keyPath: KeyPath<Owner, Value>
-}
-
-private struct ObservationScopeUncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked Sendable {
-    let keyPaths: [PartialKeyPath<Owner>]
+@inline(__always)
+private func callObservationCallback<Owner: AnyObject>(
+    _ callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+    _ event: ObservationEvent,
+    _ owner: Owner
+) {
+    let unisolated = unsafe unsafeBitCast(
+        callback,
+        to: (@Sendable (ObservationEvent, Owner) -> Void).self
+    )
+    unisolated(event, owner)
 }

@@ -34,10 +34,10 @@ func stressSeed(default defaultSeed: UInt64) -> UInt64 {
 }
 
 func legacyOptionsForCurrentRuntime(
-    _ additional: ObservationOptions = ObservationOptions()
-) -> ObservationOptions {
+    _ additional: ObservationStreamOptions = ObservationStreamOptions()
+) -> ObservationStreamOptions {
     if #available(iOS 26.0, macOS 26.0, *) {
-        return ObservationOptions(
+        return ObservationStreamOptions(
             rateLimit: additional.rateLimit,
             backend: .legacy
         )

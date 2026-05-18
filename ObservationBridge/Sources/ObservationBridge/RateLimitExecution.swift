@@ -104,7 +104,7 @@ enum ThrottleAction<Value>: Sendable where Value: Sendable {
 
 func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
 ) -> ObservedValueChannel<Value> {
@@ -219,7 +219,7 @@ func forEachOwnerValueEmissionNonSendable<Owner: AnyObject, Value>(
 
 func forEachImmediateFirstDebouncedOwnerValue<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     debounce: ObservationDebounce,
@@ -396,7 +396,7 @@ private func forEachImmediateFirstDebouncedValue<Value: Sendable>(
 
 func forEachThrottledOwnerValue<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     throttle: ObservationThrottle,
@@ -1062,7 +1062,7 @@ private func makeUncheckedSendableUnboxedStream<Element>(
 
 func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    options: ObservationOptions,
+    options: ObservationStreamOptions,
     isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool

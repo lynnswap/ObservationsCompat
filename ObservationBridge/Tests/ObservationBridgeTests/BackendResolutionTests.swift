@@ -32,7 +32,7 @@ final class BackendResolutionTests {
     }
 
     @Test
-    func observationOptionsStoresRateLimitConfiguration() {
+    func observationStreamOptionsStoresRateLimitConfiguration() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(100),
             tolerance: .milliseconds(20),
@@ -43,25 +43,25 @@ final class BackendResolutionTests {
             mode: .earliest
         )
 
-        let debounceOptions = ObservationOptions.rateLimit(.debounce(debounce))
+        let debounceOptions = ObservationStreamOptions.rateLimit(.debounce(debounce))
         #expect(debounceOptions.rateLimit == .debounce(debounce))
         #expect(debounceOptions.backend == .automatic)
-        #expect(debounceOptions == ObservationOptions(rateLimit: .debounce(debounce)))
+        #expect(debounceOptions == ObservationStreamOptions(rateLimit: .debounce(debounce)))
 
-        let throttleOptions = ObservationOptions.rateLimit(.throttle(throttle))
+        let throttleOptions = ObservationStreamOptions.rateLimit(.throttle(throttle))
         #expect(throttleOptions.rateLimit == .throttle(throttle))
         #expect(throttleOptions.backend == .automatic)
-        #expect(throttleOptions == ObservationOptions(rateLimit: .throttle(throttle)))
+        #expect(throttleOptions == ObservationStreamOptions(rateLimit: .throttle(throttle)))
     }
 
     @Test
-    func observationOptionsCanCombineRateLimitAndLegacyBackend() {
+    func observationStreamOptionsCanCombineRateLimitAndLegacyBackend() {
         let debounce = ObservationDebounce(
             interval: .milliseconds(80),
             tolerance: .milliseconds(10),
             mode: .delayedFirst
         )
-        let options = ObservationOptions(
+        let options = ObservationStreamOptions(
             rateLimit: .debounce(debounce),
             backend: .legacy
         )
@@ -72,22 +72,10 @@ final class BackendResolutionTests {
     }
 
     @Test
-    func observeTaskDefaultBackendFallsBackToLegacyOnUnsupportedOS() async {
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return
-        }
+    func observationOptionsDefaultsToDidSet() {
+        let options = ObservationOptions.didSet
 
-        let model = PlainCounterModel()
-        let queue = ValueQueue<Int>()
-
-        let observations = model.observeTask(\.value, options: ObservationOptions()) { value in
-            await queue.push(value)
-        }.storedForTest()
-        defer { observations.cancelAll() }
-
-        #expect(await nextWithTimeout(from: queue) == 0)
-
-        model.value = 42
-        #expect(await nextWithTimeout(from: queue) == 42)
+        #expect(options.contains(.didSet))
+        #expect(!ObservationOptions().contains(.didSet))
     }
 }
