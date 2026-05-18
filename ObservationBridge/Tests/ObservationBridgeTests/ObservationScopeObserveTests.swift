@@ -52,6 +52,30 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func didSetPassReadsValueAfterMutationBody() async {
+        let model = DelayedMutationCounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<ScopePass>()
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { event, model in
+            recorder.append(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+        }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 7
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 7, isEnabled: false))
+    }
+
+    @Test
     func emptyOptionsDeliverOnlyInitialEvent() async {
         let model = CounterModel()
         let observations = ObservationScope()

@@ -159,9 +159,12 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
     var kind = ObservationEvent.Kind.initial
 
     while !Task.isCancelled {
+        let changeKind = options.legacyChangeKind
+
         guard await trackLegacyScopedObservation(
             ownerToken: ownerToken,
             kind: kind,
+            changeKind: changeKind,
             isolation: isolation,
             state: state,
             callbackBox: callbackBox
@@ -169,7 +172,7 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
             break
         }
 
-        guard let changeKind = options.legacyChangeKind else {
+        guard let changeKind else {
             break
         }
 
@@ -186,6 +189,7 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
 private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
     ownerToken: UInt64,
     kind: ObservationEvent.Kind,
+    changeKind: ObservationEvent.Kind?,
     isolation: (any Actor)?,
     state: ScopedObservationState,
     callbackBox: ObservationScopeCallbackBox<Owner>
@@ -199,10 +203,23 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
             state.terminate()
         }
 
-        withObservationTracking {
+        guard let changeKind else {
             callbackBox.call(event: event, owner: owner)
-        } onChange: {
-            state.emitChange()
+            return !state.isTerminated
+        }
+
+        if changeKind == .didSet {
+            withObservationTrackingDidSet {
+                callbackBox.call(event: event, owner: owner)
+            } didSet: { _ in
+                state.emitChange()
+            }
+        } else {
+            withObservationTracking {
+                callbackBox.call(event: event, owner: owner)
+            } onChange: {
+                state.emitChange()
+            }
         }
 
         return !state.isTerminated
@@ -216,3 +233,11 @@ private func withObservationIsolation<T: Sendable>(
     // The isolated parameter makes the caller hop to `isolation` before this body runs.
     return operation()
 }
+
+private struct OpaqueObservationTracking: Sendable {}
+
+@_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
+private func withObservationTrackingDidSet<T>(
+    _ apply: () -> T,
+    didSet: @Sendable (OpaqueObservationTracking) -> Void
+) -> T

@@ -1,4 +1,5 @@
 import Observation
+import Foundation
 import Synchronization
 @testable import ObservationBridge
 
@@ -38,6 +39,25 @@ final class LockedCounterModel: Sendable {
             valueStorage.withLock {
                 $0 = newValue
                 return $0
+            }
+        }
+    }
+}
+
+@Observable
+final class DelayedMutationCounterModel: Sendable {
+    @ObservationIgnored
+    private let valueStorage = Mutex<Int>(0)
+
+    var value: Int {
+        get {
+            access(keyPath: \.value)
+            return valueStorage.withLock { $0 }
+        }
+        set {
+            withMutation(keyPath: \.value) {
+                Thread.sleep(forTimeInterval: 0.05)
+                valueStorage.withLock { $0 = newValue }
             }
         }
     }
