@@ -1,6 +1,8 @@
+import Darwin
 import Foundation
 import Observation
 import Synchronization
+import _ObservationBridgePrivateABI
 
 /// Owns owner-bound observations for an explicit lifecycle.
 ///
@@ -231,11 +233,19 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
         }
 
         if changeKind == .didSet {
-            withObservationTrackingDidSet {
+            let usedDidSetSPI = withObservationTrackingDidSetIfAvailable {
                 callbackBox.call(event: event, owner: owner)
             } didSet: { tracking in
                 state.emitChange()
-                tracking.cancelObservationTracking()
+                cancelObservationTrackingIfAvailable(tracking)
+            }
+
+            if !usedDidSetSPI {
+                withObservationTracking {
+                    callbackBox.call(event: event, owner: owner)
+                } onChange: {
+                    state.emitChange()
+                }
             }
         } else {
             withObservationTracking {
@@ -262,13 +272,62 @@ private func withObservationIsolation<T: Sendable>(
 // ABI carrier so Swift forwards the hidden value with the same indirect convention.
 private typealias OpaqueObservationTracking = URL
 
-extension OpaqueObservationTracking {
-    @_silgen_name("$s11Observation0A8TrackingV6cancelyyF")
-    fileprivate func cancelObservationTracking()
+private typealias ObservationTrackingDidSetFunction = @convention(thin) (
+    () -> Void,
+    @Sendable (OpaqueObservationTracking) -> Void
+) -> Void
+
+private let observationTrackingDidSetFunction: ObservationTrackingDidSetFunction? =
+    unsafe lookupObservationSymbol(
+        "$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF",
+        as: ObservationTrackingDidSetFunction.self
+    )
+
+private let observationTrackingCancelAddress: UInt? =
+    unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
+        .map { UInt(bitPattern: $0) }
+
+private func withObservationTrackingDidSetIfAvailable(
+    _ apply: () -> Void,
+    didSet: @Sendable (OpaqueObservationTracking) -> Void
+) -> Bool {
+    #if arch(arm64)
+    guard let observationTrackingDidSetFunction, observationTrackingCancelAddress != nil else {
+        return false
+    }
+
+    observationTrackingDidSetFunction(apply, didSet)
+    return true
+    #else
+    return false
+    #endif
 }
 
-@_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
-private func withObservationTrackingDidSet<T>(
-    _ apply: () -> T,
-    didSet: @Sendable (OpaqueObservationTracking) -> Void
-) -> T
+private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationTracking) {
+    guard
+        let observationTrackingCancelAddress,
+        let observationTrackingCancelFunction = unsafe UnsafeMutableRawPointer(
+            bitPattern: observationTrackingCancelAddress
+        )
+    else {
+        return
+    }
+
+    unsafe withUnsafePointer(to: tracking) { trackingPointer in
+        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
+    }
+}
+
+private func lookupObservationSymbol<T>(
+    _ name: UnsafePointer<CChar>,
+    as type: T.Type
+) -> T? {
+    guard let symbol = unsafe lookupObservationSymbol(name) else {
+        return nil
+    }
+    return unsafe unsafeBitCast(symbol, to: type)
+}
+
+private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
+    unsafe dlsym(unsafe UnsafeMutableRawPointer(bitPattern: -2), name)
+}
