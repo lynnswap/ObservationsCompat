@@ -7,7 +7,7 @@ import Synchronization
 /// view setup or cell configuration. The scope cancels all stored observations when it is
 /// deallocated.
 public final class ObservationScope: @unchecked Sendable {
-    private let slots = Mutex<[ObservationScopeID: any ObservationScopeSlotProtocol]>([:])
+    private let storage = Mutex(ObservationScopeStorage())
 
     /// Creates an empty observation scope.
     public init() {}
@@ -32,6 +32,9 @@ public final class ObservationScope: @unchecked Sendable {
         _line: UInt = #line,
         _column: UInt = #column
     ) {
+        let cancellationGeneration = storage.withLock { storage in
+            storage.cancellationGeneration
+        }
         let observationIsolation = apply.isolation ?? isolation
         let id = ObservationScopeID(
             fileID: String(describing: _fileID),
@@ -52,19 +55,27 @@ public final class ObservationScope: @unchecked Sendable {
             isolation: observationIsolation,
             apply: apply
         )
-        let start = slots.withLock { slots in
-            let replacedSlot = slots.updateValue(slot, forKey: id)
+        let insertion = storage.withLock { storage -> (start: (@Sendable () -> Void)?, shouldCancelNewSlot: Bool) in
+            guard storage.cancellationGeneration == cancellationGeneration else {
+                return (nil, true)
+            }
+
+            let replacedSlot = storage.slots.updateValue(slot, forKey: id)
             replacedSlot?.cancel()
-            return slot.reserveStart()
+            return (slot.reserveStart(), false)
         }
-        start?()
+        if insertion.shouldCancelNewSlot {
+            slot.cancel()
+        }
+        insertion.start?()
     }
 
     /// Cancels every observation currently owned by the scope.
     public func cancelAll() {
-        let currentSlots = slots.withLock { slots in
-            let currentSlots = Array(slots.values)
-            slots.removeAll(keepingCapacity: true)
+        let currentSlots = storage.withLock { storage in
+            storage.cancellationGeneration &+= 1
+            let currentSlots = Array(storage.slots.values)
+            storage.slots.removeAll(keepingCapacity: true)
             return currentSlots
         }
 
@@ -128,6 +139,11 @@ public final class ObservationScope: @unchecked Sendable {
             }
         }
     }
+}
+
+private struct ObservationScopeStorage {
+    var cancellationGeneration: UInt64 = 0
+    var slots: [ObservationScopeID: any ObservationScopeSlotProtocol] = [:]
 }
 
 func runScopedObservationLoop<Owner: AnyObject & Observable>(
