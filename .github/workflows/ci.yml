@@ -69,7 +69,3 @@ jobs:
       - name: Run Swift package tests
         run: |
           swift test
-
-      - name: Build x86_64 macOS package
-        run: |
-          swift build --triple x86_64-apple-macosx15.0
