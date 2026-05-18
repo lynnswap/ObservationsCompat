@@ -4,7 +4,7 @@ import Synchronization
 import Testing
 @testable import ObservationBridge
 
-@Suite
+@Suite(.serialized)
 final class RateLimitTests {
     @Test
     func observationBridgeDebounceImmediateFirstSupportsDeterministicClockControl() async {

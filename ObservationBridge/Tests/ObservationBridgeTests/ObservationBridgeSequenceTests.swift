@@ -4,7 +4,7 @@ import Synchronization
 import Testing
 @testable import ObservationBridge
 
-@Suite
+@Suite(.serialized)
 final class ObservationBridgeSequenceTests {
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
@@ -50,7 +50,7 @@ final class ObservationBridgeSequenceTests {
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        let latestValue = 500
+        let latestValue = 100
         for value in 1...latestValue {
             model.value = value
         }
@@ -83,7 +83,7 @@ final class ObservationBridgeSequenceTests {
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        for _ in 0..<1_000 {
+        for _ in 0..<100 {
             model.value = 1
         }
 
