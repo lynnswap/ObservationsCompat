@@ -34,6 +34,7 @@ protocol ObservationScopeSlotProtocol: AnyObject, Sendable {
     var descriptor: ObservationScopeDescriptor { get }
     var isActive: Bool { get }
 
+    func reserveStart() -> (@Sendable () -> Void)?
     func cancel()
 }
 
@@ -73,21 +74,31 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
         }
     }
 
-    func start() {
+    func reserveStart() -> (@Sendable () -> Void)? {
         guard let operation = startOperation.withLock({ state in
             let operation = state
             state = nil
             return operation
         }) else {
-            return
+            return nil
         }
 
-        let task = operation()
-        if isActive {
-            taskBox.replace(with: task)
-        } else {
-            task.cancel()
+        guard isActive else {
+            return nil
         }
+
+        return { [state, taskBox] in
+            guard !state.isTerminated else {
+                return
+            }
+
+            let task = operation()
+            taskBox.replace(with: task)
+        }
+    }
+
+    func start() {
+        reserveStart()?()
     }
 
     func cancel() {

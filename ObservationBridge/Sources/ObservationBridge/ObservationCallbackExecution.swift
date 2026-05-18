@@ -59,19 +59,64 @@ final class ObservationExecutionLifetime: Sendable {
 }
 
 final class ObservationTaskBox: Sendable {
-    private let task = Mutex<Task<Void, Never>?>(nil)
+    private struct State {
+        var isFinished = false
+        var task: Task<Void, Never>?
+    }
 
-    func replace(with newTask: Task<Void, Never>?) {
-        let oldTask = task.withLock { task in
-            let oldTask = task
-            task = newTask
-            return oldTask
+    private struct Replacement {
+        var tasksToCancel: [Task<Void, Never>]
+        var installed: Bool
+    }
+
+    private let state = Mutex(State())
+
+    @discardableResult
+    func replace(with newTask: Task<Void, Never>?) -> Bool {
+        let replacement = state.withLock { state in
+            if state.isFinished {
+                let oldTask = state.task
+                state.task = nil
+                return Replacement(
+                    tasksToCancel: [oldTask, newTask].compactMap { $0 },
+                    installed: false
+                )
+            }
+
+            let oldTask = state.task
+            state.task = newTask
+            return Replacement(
+                tasksToCancel: [oldTask].compactMap { $0 },
+                installed: true
+            )
         }
-        oldTask?.cancel()
+        for task in replacement.tasksToCancel {
+            task.cancel()
+        }
+        return replacement.installed
     }
 
     func cancel() {
-        replace(with: nil)
+        let taskToCancel = state.withLock { state in
+            let task = state.task
+            state.task = nil
+            return task
+        }
+        taskToCancel?.cancel()
+    }
+
+    func finish() {
+        let taskToCancel = state.withLock { state in
+            if state.isFinished {
+                return nil as Task<Void, Never>?
+            }
+
+            state.isFinished = true
+            let task = state.task
+            state.task = nil
+            return task
+        }
+        taskToCancel?.cancel()
     }
 }
 

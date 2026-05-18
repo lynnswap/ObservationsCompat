@@ -52,11 +52,12 @@ public final class ObservationScope: @unchecked Sendable {
             isolation: observationIsolation,
             apply: apply
         )
-        let replacedSlot = slots.withLock { slots in
-            slots.updateValue(slot, forKey: id)
+        let start = slots.withLock { slots in
+            let replacedSlot = slots.updateValue(slot, forKey: id)
+            replacedSlot?.cancel()
+            return slot.reserveStart()
         }
-        replacedSlot?.cancel()
-        slot.start()
+        start?()
     }
 
     /// Cancels every observation currently owned by the scope.
@@ -101,8 +102,8 @@ public final class ObservationScope: @unchecked Sendable {
         }
 
         let handle = ObservationHandle {
-            taskBox.cancel()
             lifetime.cancel()
+            taskBox.finish()
         }
         OwnerCancellationRegistry.register(handle, owner: owner)
 
@@ -195,6 +196,10 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
     callbackBox: ObservationScopeCallbackBox<Owner>
 ) async -> Bool {
     await withObservationIsolation(isolation: isolation) {
+        guard !state.isTerminated else {
+            return false
+        }
+
         guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
             return false
         }

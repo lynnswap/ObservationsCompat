@@ -292,6 +292,41 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func reservedStartDoesNotRunAfterSlotCancellation() async {
+        let model = CounterModel()
+        let state = ScopedObservationState()
+        let taskBox = ObservationTaskBox()
+        let handle = ObservationHandle {
+            state.terminate()
+            taskBox.finish()
+        }
+        let recorder = ValueRecorder<String>()
+        let slot = ObservationScopeSlot(
+            descriptor: ObservationScopeDescriptor(
+                owner: model,
+                options: .didSet,
+                observationIsolation: nil,
+                callbackIsolation: nil
+            ),
+            state: state,
+            handle: handle,
+            taskBox: taskBox,
+            callbackBox: ObservationScopeCallbackBox<CounterModel> { _, _ in }
+        ) {
+            recorder.append("started")
+            return Task {}
+        }
+
+        let start = slot.reserveStart()
+        #expect(start != nil)
+
+        slot.cancel()
+        start?()
+
+        #expect(recorder.snapshot().isEmpty)
+    }
+
+    @Test
     func initialOnlyObservationReleasesCallbackAfterNaturalCompletion() async {
         let model = CounterModel()
         let observations = ObservationScope()
