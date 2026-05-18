@@ -6,7 +6,9 @@ public struct ObservationEvent: Sendable {
     public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
         private enum RawValue: UInt8, Sendable {
             case initial
+            #if compiler(>=6.4)
             case willSet
+            #endif
             case didSet
         }
 
@@ -17,10 +19,13 @@ public struct ObservationEvent: Sendable {
             Kind(rawValue: .initial)
         }
 
-        /// A pass triggered by a tracked property mutation.
+        #if compiler(>=6.4)
+        /// A pass triggered before a tracked property mutation.
+        @available(*, unavailable, message: "ObservationEvent.Kind.willSet is reserved for the Swift 6.4 native backend.")
         public static var willSet: Kind {
             Kind(rawValue: .willSet)
         }
+        #endif
 
         /// A pass after observed state changed.
         public static var didSet: Kind {
@@ -31,8 +36,10 @@ public struct ObservationEvent: Sendable {
             switch rawValue {
             case .initial:
                 "initial"
+            #if compiler(>=6.4)
             case .willSet:
                 "willSet"
+            #endif
             case .didSet:
                 "didSet"
             }
@@ -58,8 +65,8 @@ public struct ObservationEvent: Sendable {
 
     #if compiler(>=6.4)
     /// Returns whether this event was triggered by the supplied key path.
+    @available(*, unavailable, message: "ObservationEvent.matches(_:) is reserved for the Swift 6.4 native backend.")
     public func matches(_ keyPath: PartialKeyPath<some Observable>) -> Bool {
-        #error("Delegate ObservationEvent.matches(_:) to ObservationTracking.Event.matches(_:) in the Swift 6.4 backend.")
         false
     }
     #endif

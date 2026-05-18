@@ -124,8 +124,9 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
     callbackBox: ObservationScopeCallbackBox<Owner>
 ) async {
     #if compiler(>=6.4)
-    #error("Replace the legacy owner-bound runner with native withContinuousObservation(options:apply:) and ObservationTracking.Event forwarding.")
-    #else
+    // TODO: Replace this fallback with native withContinuousObservation(options:apply:)
+    // and ObservationTracking.Event forwarding once the Swift 6.4 API is available.
+    #endif
     await runLegacyScopedObservationLoop(
         ownerToken: ownerToken,
         options: options,
@@ -133,7 +134,6 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
         state: state,
         callbackBox: callbackBox
     )
-    #endif
 }
 
 private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(

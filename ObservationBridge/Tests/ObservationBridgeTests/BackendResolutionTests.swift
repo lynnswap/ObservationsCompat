@@ -76,7 +76,6 @@ final class BackendResolutionTests {
         let options = ObservationOptions.didSet
 
         #expect(options.contains(.didSet))
-        #expect(!options.contains(.willSet))
-        #expect(ObservationOptions.willSet.contains(.willSet))
+        #expect(!ObservationOptions().contains(.didSet))
     }
 }

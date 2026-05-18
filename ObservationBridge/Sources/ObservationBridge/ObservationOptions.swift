@@ -88,8 +88,11 @@ public enum ObservationBackend: Sendable, Hashable {
 public struct ObservationOptions: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
+    #if compiler(>=6.4)
     /// Re-runs the observation callback when observed state is about to change.
+    @available(*, unavailable, message: "ObservationOptions.willSet is reserved for the Swift 6.4 native backend.")
     public static let willSet = ObservationOptions(rawValue: 1 << 0)
+    #endif
 
     /// Re-runs the observation callback after observed state changes.
     public static let didSet = ObservationOptions(rawValue: 1 << 1)
@@ -102,9 +105,6 @@ public struct ObservationOptions: OptionSet, Sendable, Hashable {
     }
 
     var legacyChangeKind: ObservationEvent.Kind? {
-        if contains(.willSet) {
-            return .willSet
-        }
         if contains(.didSet) {
             return .didSet
         }

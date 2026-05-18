@@ -42,15 +42,9 @@ The callback body is the tracking body. Every observable property read from
 `ObservationEvent.kind` describes why the callback is running:
 
 - `.initial`: the first tracking pass
-- `.willSet`: a later pass triggered by observed state about to change
 - `.didSet`: a later pass after observed state changed
 
 `ObservationOptions` controls which later events are delivered:
-
-```swift
-observations.observe(model, options: .willSet) { event, model in
-    render(model)
-}
 
 observations.observe(model, options: .didSet) { event, model in
     render(model)
@@ -61,10 +55,9 @@ observations.observe(model, options: []) { event, model in
 }
 ```
 
-`[]` delivers only `.initial`. `.willSet` and `.didSet` deliver `.initial` plus
-subsequent change-triggered passes. On Swift 6.3 and earlier, requesting both
-`.willSet` and `.didSet` uses a single legacy change pass. The native Swift 6.4
-backend is the planned path for exact stdlib event matching.
+`[]` delivers only `.initial`. `.didSet` delivers `.initial` plus subsequent
+change-triggered passes. `.willSet` is intentionally unavailable until the
+native Swift 6.4 backend can provide accurate about-to-change timing.
 
 Call `event.cancel()` to stop the current observation, or `cancelAll()` to tear
 down every observation owned by the scope:
@@ -178,9 +171,8 @@ observations.observe(model) { _, model in
 - `id:`, `ObservationScope.update(_:)`, and `ObservationScope.cancel(id:)` have
   been removed. Use one `ObservationScope` per lifecycle owner and call
   `cancelAll()` before rebinding a dynamic set of observations.
-- `ObservationOptions` is now an owner-bound event option set. Use `.didSet` or
-  `.willSet` for initial + subsequent callbacks, or `[]` for initial-only
-  callbacks.
+- `ObservationOptions` is now an owner-bound event option set. Use `.didSet` for
+  initial + subsequent callbacks, or `[]` for initial-only callbacks.
 - `ObservationEvent.matches(_:)` is not exposed on Swift 6.3 and earlier. It is
   reserved for the Swift 6.4 native backend where stdlib exposes matching.
 - Stream rate-limit and backend settings moved from `ObservationOptions` to

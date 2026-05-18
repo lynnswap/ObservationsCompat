@@ -17,11 +17,9 @@ final class ObservationScopeObserveTests {
     @Test
     func observationEventKindStaticValuesAreEquatable() {
         #expect(ObservationEvent.Kind.initial == .initial)
-        #expect(ObservationEvent.Kind.willSet == .willSet)
         #expect(ObservationEvent.Kind.didSet == .didSet)
-        #expect(ObservationEvent.Kind.initial != .willSet)
-        #expect(ObservationEvent.Kind.willSet != .didSet)
-        #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
+        #expect(ObservationEvent.Kind.initial != .didSet)
+        #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
     }
 
     @Test
@@ -74,43 +72,6 @@ final class ObservationScopeObserveTests {
         model.value = 1
         try? await Task.sleep(nanoseconds: 100_000_000)
         #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
-    }
-
-    @Test
-    func willSetOptionsDeliverWillSetEvent() async {
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let recorder = ValueRecorder<ObservationEvent.Kind>()
-        defer { observations.cancelAll() }
-
-        observations.observe(model, options: .willSet) { event, model in
-            recorder.append(event.kind)
-            _ = model.value
-        }
-
-        #expect(await waitUntilCount(1, in: recorder))
-        model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot() == [.initial, .willSet])
-    }
-
-    @Test
-    func willSetAndDidSetOptionsUseSingleLegacyChangePass() async {
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let recorder = ValueRecorder<ObservationEvent.Kind>()
-        defer { observations.cancelAll() }
-
-        observations.observe(model, options: [.willSet, .didSet]) { event, model in
-            recorder.append(event.kind)
-            _ = model.value
-        }
-
-        #expect(await waitUntilCount(1, in: recorder))
-        model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [.initial, .willSet])
     }
 
     @Test
@@ -189,8 +150,8 @@ final class ObservationScopeObserveTests {
         installReplacingObservation(
             observations: observations,
             model: model,
-            options: .willSet,
-            label: "will",
+            options: [],
+            label: "initial",
             recorder: recorder
         )
         #expect(await waitUntilCount(1, in: recorder))
@@ -207,7 +168,7 @@ final class ObservationScopeObserveTests {
         model.value = 1
         #expect(await waitUntilCount(3, in: recorder))
         try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == ["will:initial:0", "did:initial:0", "did:didSet:1"])
+        #expect(recorder.snapshot() == ["initial:initial:0", "did:initial:0", "did:didSet:1"])
     }
 
     @Test
