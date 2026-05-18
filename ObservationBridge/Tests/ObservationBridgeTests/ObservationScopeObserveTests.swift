@@ -76,13 +76,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func publicDidSetFallbackKeepsDidSetEventKind() async {
+    func didSetUnavailableFallbackDoesNotEmitStaleDidSet() async {
         _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
         }
 
-        let model = CounterModel()
+        let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
         let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
@@ -100,8 +100,8 @@ final class ObservationScopeObserveTests {
         #expect(await waitUntilCount(1, in: recorder))
 
         model.value = 11
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 11, isEnabled: false))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
 
     @Test

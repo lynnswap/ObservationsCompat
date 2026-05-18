@@ -233,19 +233,13 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
         }
 
         if changeKind == .didSet {
-            let usedDidSetSPI = withObservationTrackingDidSetIfAvailable({
+            guard withObservationTrackingDidSetIfAvailable({
                 callbackBox.call(event: event, owner: owner)
             }, didSet: { tracking in
                 state.emitChange()
                 cancelObservationTrackingIfAvailable(tracking)
-            })
-
-            if !usedDidSetSPI {
-                withObservationTracking {
-                    callbackBox.call(event: event, owner: owner)
-                } onChange: {
-                    state.emitDeferredChange()
-                }
+            }) else {
+                return false
             }
         } else {
             withObservationTracking {
@@ -260,7 +254,9 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
 }
 
 private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {
-    guard options.contains(.didSet) else {
+    // Public `withObservationTracking` only exposes will-set timing. Without the hidden did-set
+    // SPI, avoid synthesizing an event that can re-read stale values while claiming `.didSet`.
+    guard options.contains(.didSet), canUseObservationTrackingDidSetSPI else {
         return nil
     }
 

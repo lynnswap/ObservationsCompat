@@ -219,13 +219,6 @@ final class ScopedObservationState: @unchecked Sendable {
         }
     }
 
-    func emitDeferredChange() {
-        Task { [self] in
-            await Task.yield()
-            emitChange()
-        }
-    }
-
     func terminate() {
         let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             guard !state.terminated else {
