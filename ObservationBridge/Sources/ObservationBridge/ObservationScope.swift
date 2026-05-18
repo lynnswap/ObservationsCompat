@@ -46,13 +46,21 @@ public final class ObservationScope {
         )
 
         slots.removeValue(forKey: id)?.cancel()
-        slots[id] = makeObservationSlot(
+        let slot = makeObservationSlot(
             owner: owner,
             descriptor: descriptor,
             options: options,
             isolation: observationIsolation,
             apply: apply
         )
+        slots[id] = slot
+        slot.start()
+
+        if !slot.isActive,
+           let currentSlot = slots[id],
+           currentSlot === slot {
+            slots.removeValue(forKey: id)
+        }
     }
 
     /// Cancels every observation currently owned by the scope.
@@ -80,29 +88,21 @@ public final class ObservationScope {
         let state = ScopedObservationState()
         let lifetime = ObservationExecutionLifetime()
         let callbackBox = ObservationScopeCallbackBox(apply)
+        let callbackCleaner: any ObservationScopeCallbackClearing = callbackBox
         let runner: any ScopedObservationRunner = TypedScopedObservationRunner(callbackBox: callbackBox)
+        let taskBox = ObservationTaskBox()
         lifetime.addCancellationHandler {
             WeakOwnerRegistry.removeToken(ownerToken)
         }
         lifetime.addCancellationHandler {
             state.terminate()
         }
-
-        let monitorTask = makeObservationTask {
-            defer {
-                lifetime.cancel()
-            }
-
-            await runner.run(
-                ownerToken: ownerToken,
-                options: options,
-                isolation: isolation,
-                state: state
-            )
+        lifetime.addCancellationHandler {
+            callbackCleaner.clear()
         }
 
         let handle = ObservationHandle {
-            monitorTask.cancel()
+            taskBox.cancel()
             lifetime.cancel()
         }
         OwnerCancellationRegistry.register(handle, owner: owner)
@@ -111,8 +111,22 @@ public final class ObservationScope {
             descriptor: descriptor,
             state: state,
             handle: handle,
+            taskBox: taskBox,
             callbackBox: callbackBox
-        )
+        ) {
+            makeObservationTask {
+                defer {
+                    lifetime.cancel()
+                }
+
+                await runner.run(
+                    ownerToken: ownerToken,
+                    options: options,
+                    isolation: isolation,
+                    state: state
+                )
+            }
+        }
     }
 }
 

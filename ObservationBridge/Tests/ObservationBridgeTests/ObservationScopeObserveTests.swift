@@ -215,6 +215,59 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func cancelAllDuringInitialCallbackStopsCurrentObservation() async {
+        let model = CounterModel()
+        let probe = ObservationScopeCancellationProbe()
+        let observations = probe.observations
+        let recorder = ValueRecorder<ObservationEvent.Kind>()
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { event, model in
+            recorder.append(event.kind)
+            _ = model.value
+            probe.cancelAll()
+        }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        model.value = 1
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(recorder.snapshot() == [.initial])
+    }
+
+    @Test
+    func initialOnlyObservationReleasesCallbackAfterNaturalCompletion() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<Int>()
+        let didDeinit = DeinitFlag()
+
+        do {
+            let probe = CallbackCaptureProbe {
+                Task {
+                    await didDeinit.mark()
+                }
+            }
+            observations.observe(model, options: []) { _, model in
+                probe.record(model.value)
+                recorder.append(model.value)
+            }
+            #expect(await waitUntilCount(1, in: recorder))
+        }
+
+        let releasedCallbackCapture = await waitWithTimeout {
+            while !(await didDeinit.didDeinit) {
+                if Task.isCancelled {
+                    return false
+                }
+                await Task.yield()
+            }
+            return true
+        }
+        #expect(releasedCallbackCapture == true)
+        observations.cancelAll()
+    }
+
+    @Test
     func observeDoesNotRetainOwner() async {
         let observations = ObservationScope()
         let didDeinit = DeinitFlag()

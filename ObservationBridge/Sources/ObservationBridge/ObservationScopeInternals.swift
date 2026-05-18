@@ -38,11 +38,17 @@ protocol ObservationScopeSlotProtocol: AnyObject {
     func cancel()
 }
 
+protocol ObservationScopeCallbackClearing: Sendable {
+    func clear()
+}
+
 final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol {
     let descriptor: ObservationScopeDescriptor
     let callbackBox: ObservationScopeCallbackBox<Owner>
     private let state: ScopedObservationState
     private let handle: ObservationHandle
+    private let taskBox: ObservationTaskBox
+    private let startOperation: Mutex<(@Sendable () -> Task<Void, Never>)?>
 
     var isActive: Bool {
         !state.isTerminated
@@ -52,15 +58,36 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
         descriptor: ObservationScopeDescriptor,
         state: ScopedObservationState,
         handle: ObservationHandle,
-        callbackBox: ObservationScopeCallbackBox<Owner>
+        taskBox: ObservationTaskBox,
+        callbackBox: ObservationScopeCallbackBox<Owner>,
+        startOperation: @escaping @Sendable () -> Task<Void, Never>
     ) {
         self.descriptor = descriptor
         self.state = state
         self.handle = handle
+        self.taskBox = taskBox
         self.callbackBox = callbackBox
+        self.startOperation = Mutex(startOperation)
 
         handle.addCancellationHandler { [callbackBox] in
             callbackBox.clear()
+        }
+    }
+
+    func start() {
+        guard let operation = startOperation.withLock({ state in
+            let operation = state
+            state = nil
+            return operation
+        }) else {
+            return
+        }
+
+        let task = operation()
+        if isActive {
+            taskBox.replace(with: task)
+        } else {
+            task.cancel()
         }
     }
 
@@ -105,6 +132,8 @@ final class ObservationScopeCallbackBox<Owner: AnyObject>: @unchecked Sendable {
         callObservationCallback(callback, event, owner)
     }
 }
+
+extension ObservationScopeCallbackBox: ObservationScopeCallbackClearing {}
 
 protocol ScopedObservationRunner: Sendable {
     func run(
