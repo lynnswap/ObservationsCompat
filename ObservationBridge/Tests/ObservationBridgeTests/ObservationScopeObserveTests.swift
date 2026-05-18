@@ -172,6 +172,39 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func repeatedObserveFromSameCallSiteWithDifferentOwnerReplacesPipeline() async {
+        let first = CounterModel()
+        let second = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<String>()
+        defer { observations.cancelAll() }
+
+        installReplacingObservation(
+            observations: observations,
+            model: first,
+            label: "first",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(1, in: recorder))
+
+        installReplacingObservation(
+            observations: observations,
+            model: second,
+            label: "second",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(2, in: recorder))
+
+        first.value = 1
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0"])
+
+        second.value = 2
+        #expect(await waitUntilCount(3, in: recorder))
+        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0", "second:didSet:2"])
+    }
+
+    @Test
     func cancelAllStopsLaterEvents() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -320,6 +353,19 @@ final class ObservationScopeObserveTests {
         #expect(await waitUntilCount(2, in: recorder))
         #expect(recorder.snapshot() == [0, 2])
     }
+
+    @Test
+    func observeUsesCustomActorIsolationForCallbacks() async {
+        let model = CounterModel()
+        let probe = CustomActorObservationProbe()
+
+        await probe.observe(model)
+        #expect(await waitUntilValues([0], in: probe))
+
+        model.value = 4
+        #expect(await waitUntilValues([0, 4], in: probe))
+        await probe.cancelAll()
+    }
 }
 
 private enum ReplacementReadTarget {
@@ -354,4 +400,41 @@ private func installReplacingObservation(
             recorder.append("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
         }
     }
+}
+
+private actor CustomActorObservationProbe {
+    private let observations = ObservationScope()
+    private var values: [Int] = []
+
+    func observe(_ model: CounterModel) {
+        observations.observe(model) { _, model in
+            self.preconditionIsolated()
+            self.values.append(model.value)
+        }
+    }
+
+    func snapshot() -> [Int] {
+        values
+    }
+
+    func cancelAll() {
+        observations.cancelAll()
+    }
+}
+
+private func waitUntilValues(
+    _ expected: [Int],
+    in probe: CustomActorObservationProbe,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Bool {
+    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
+        while await probe.snapshot() != expected {
+            if Task.isCancelled {
+                return false
+            }
+            await Task.yield()
+        }
+        return true
+    }
+    return reached == true
 }

@@ -35,8 +35,7 @@ public final class ObservationScope {
         let id = ObservationScopeID(
             fileID: String(describing: _fileID),
             line: _line,
-            column: _column,
-            ownerID: ObjectIdentifier(owner)
+            column: _column
         )
         let descriptor = ObservationScopeDescriptor(
             owner: owner,
@@ -210,9 +209,15 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
     }
 }
 
-private func withObservationIsolation<T>(
+private func withObservationIsolation<T: Sendable>(
     isolation: isolated (any Actor)?,
     _ operation: () -> T
 ) -> T {
-    operation()
+    if let isolation {
+        nonisolated(unsafe) let unsafeOperation = operation
+        return isolation.assumeIsolated { _ in
+            unsafe unsafeOperation()
+        }
+    }
+    return operation()
 }

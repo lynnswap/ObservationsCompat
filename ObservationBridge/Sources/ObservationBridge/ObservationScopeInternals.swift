@@ -5,7 +5,6 @@ struct ObservationScopeID: Hashable {
     let fileID: String
     let line: UInt
     let column: UInt
-    let ownerID: ObjectIdentifier
 }
 
 struct ObservationScopeDescriptor: Equatable {
