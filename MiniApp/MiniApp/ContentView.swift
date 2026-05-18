@@ -11,46 +11,9 @@ import ObservationBridge
 import Synchronization
 import SwiftUI
 
-private enum StressRunMode: Sendable {
-    case `default`
-    case forceLegacy
-
-    var title: String {
-        switch self {
-        case .default:
-            return "default"
-        case .forceLegacy:
-            return "forceLegacy"
-        }
-    }
-
-    var seed: UInt64 {
-        switch self {
-        case .default:
-            return 0x26_00_00_00_00_00_00_01
-        case .forceLegacy:
-            return 0x26_00_00_00_00_00_00_02
-        }
-    }
-
-    var options: ObservationOptions {
-        switch self {
-        case .default:
-            return ObservationOptions()
-        case .forceLegacy:
-            if #available(iOS 26.0, macOS 26.0, *) {
-                return .legacyBackend
-            }
-            return ObservationOptions()
-        }
-    }
-}
-
 struct ContentView: View {
     @State private var isRunning = false
-    @State private var runningMode: StressRunMode?
-    @State private var defaultElapsedSeconds: Double?
-    @State private var forceLegacyElapsedSeconds: Double?
+    @State private var elapsedSeconds: Double?
     @State private var runningTask: Task<Void, Never>?
 
     var body: some View {
@@ -58,27 +21,20 @@ struct ContentView: View {
             Form {
                 Section("Run") {
                     LabeledContent("Status") {
-                        if isRunning, let runningMode {
+                        if isRunning {
                             HStack(spacing: 8) {
                                 ProgressView()
-                                Text("Running (\(runningMode.title))")
+                                Text("Running")
                             }
                         } else {
                             Text("Idle")
                         }
                     }
 
-                    Button("Run Default") {
-                        startRun(mode: .default)
+                    Button("Run") {
+                        startRun()
                     }
                     .disabled(isRunning)
-
-                    if #available(iOS 26.0, macOS 26.0, *) {
-                        Button("Run Force Legacy") {
-                            startRun(mode: .forceLegacy)
-                        }
-                        .disabled(isRunning)
-                    }
 
                     if isRunning {
                         Button("Cancel", role: .destructive) {
@@ -88,12 +44,8 @@ struct ContentView: View {
                 }
 
                 Section("Elapsed Time") {
-                    LabeledContent("Default") {
-                        Text(formattedElapsed(defaultElapsedSeconds))
-                            .monospacedDigit()
-                    }
-                    LabeledContent("Force Legacy") {
-                        Text(formattedElapsed(forceLegacyElapsedSeconds))
+                    LabeledContent("Latest") {
+                        Text(formattedElapsed(elapsedSeconds))
                             .monospacedDigit()
                     }
                 }
@@ -116,7 +68,7 @@ struct ContentView: View {
             )
     }
 
-    private func startRun(mode: StressRunMode) {
+    private func startRun() {
         guard !isRunning else {
             return
         }
@@ -124,13 +76,11 @@ struct ContentView: View {
         let iterations = 1_000_000
 
         isRunning = true
-        runningMode = mode
 
         runningTask = Task {
             let result = await StressBenchmarkRunner.run(
-                mode: mode,
                 iterations: iterations,
-                seed: mode.seed
+                seed: 0x26_00_00_00_00_00_00_01
             )
 
             if Task.isCancelled {
@@ -138,15 +88,8 @@ struct ContentView: View {
             }
 
             await MainActor.run {
-                switch mode {
-                case .default:
-                    defaultElapsedSeconds = result.elapsedSeconds
-                case .forceLegacy:
-                    forceLegacyElapsedSeconds = result.elapsedSeconds
-                }
-
+                elapsedSeconds = result.elapsedSeconds
                 isRunning = false
-                runningMode = nil
                 runningTask = nil
             }
         }
@@ -156,7 +99,6 @@ struct ContentView: View {
         runningTask?.cancel()
         runningTask = nil
         isRunning = false
-        runningMode = nil
     }
 }
 
@@ -232,8 +174,6 @@ private struct StressRunOutcome: Sendable {
 }
 
 private struct StressRunResult: Sendable {
-    let mode: StressRunMode
-    let effectiveBackend: String
     let iterations: Int
     let workers: Int
     let seed: UInt64
@@ -250,7 +190,6 @@ private enum StressBenchmarkRunner {
     ) -> Void
 
     static func run(
-        mode: StressRunMode,
         iterations: Int,
         seed: UInt64
     ) async -> StressRunResult {
@@ -259,16 +198,14 @@ private enum StressBenchmarkRunner {
             iterations: iterations,
             seed: seed
         ) { model, observations, onObserved in
-            model.observeTask(\.value, options: mode.options) { value in
-                onObserved(value)
-            }.store(in: observations)
+            observations.observe(model) { _, model in
+                onObserved(model.value)
+            }
         }
         let endNanos = DispatchTime.now().uptimeNanoseconds
         let elapsedSeconds = Double(endNanos - startNanos) / 1_000_000_000
 
         return StressRunResult(
-            mode: mode,
-            effectiveBackend: resolvedBackend(for: mode),
             iterations: iterations,
             workers: result.workers,
             seed: seed,
@@ -276,18 +213,6 @@ private enum StressBenchmarkRunner {
             firstFailure: result.firstFailure,
             elapsedSeconds: elapsedSeconds
         )
-    }
-
-    private static func resolvedBackend(for mode: StressRunMode) -> String {
-        switch mode {
-        case .forceLegacy:
-            return "legacy"
-        case .default:
-            if #available(iOS 26.0, macOS 26.0, *) {
-                return "native"
-            }
-            return "legacy"
-        }
     }
 
     private static func runTwoThreadWriteAndReadRound(

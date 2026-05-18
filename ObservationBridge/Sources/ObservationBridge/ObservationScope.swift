@@ -1,69 +1,72 @@
-/// Owns callback and task observations for an explicit lifecycle.
+import Observation
+
+/// Owns owner-bound observations for an explicit lifecycle.
 ///
-/// Store ``ObservationRegistration`` values in a scope while their observations should stay
-/// active. The scope cancels all stored observations when it is deallocated.
+/// Call ``observe(_:options:_:isolation:_fileID:_line:_column:)`` at lifecycle boundaries such as
+/// view setup or cell configuration. The scope cancels all stored observations when it is
+/// deallocated.
 public final class ObservationScope {
-    private var slots: [AnyHashable: ObservationScopeSlot] = [:]
-    private var transactionDeclarations: [AnyHashable: ObservationScopeDeclaration]?
-    private var creatingSlotCounts: [AnyHashable: Int] = [:]
-    private var pendingDeclarationTokens: [AnyHashable: [UInt64]] = [:]
-    private var invalidatedPendingDeclarationTokens: Set<UInt64> = []
-    private var nextPendingDeclarationToken: UInt64 = 0
-    private var cancelledSlotCreationIDs: Set<AnyHashable> = []
-    private var cancelsAllDuringSlotCreation = false
+    private var slots: [ObservationScopeID: any ObservationScopeSlotProtocol] = [:]
 
     /// Creates an empty observation scope.
     public init() {}
 
-    /// Reconciles the observations declared while running `body`.
+    /// Starts or replaces an owner-bound observation.
     ///
-    /// Observations stored from the same call sites or explicit identifiers reuse their existing
-    /// pipelines when their configuration still matches. Observations that were active before the
-    /// update but are not stored again from `body` are cancelled.
+    /// The callback body is the tracking body: every observable property read from `owner` inside
+    /// `apply` becomes part of the observation. Calling the same observation again from the same
+    /// call site replaces the callback instead of creating a duplicate pipeline.
     ///
-    /// - Parameter body: A synchronous declaration block that stores the observations that should
-    ///   remain active after the update.
-    public func update(_ body: () -> Void) {
-        if transactionDeclarations != nil {
-            body()
+    /// - Parameters:
+    ///   - owner: The observable object whose properties are read by `apply`.
+    ///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
+    ///   - apply: The callback to run for the initial pass and selected subsequent events.
+    ///   - isolation: The actor isolation used to start the observation.
+    public func observe<Owner: AnyObject & Observable>(
+        _ owner: Owner,
+        options: ObservationOptions = .didSet,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) {
+        let observationIsolation = apply.isolation ?? isolation
+        let id = ObservationScopeID(
+            fileID: String(describing: _fileID),
+            line: _line,
+            column: _column,
+            ownerID: ObjectIdentifier(owner),
+            options: options
+        )
+        let descriptor = ObservationScopeDescriptor(
+            owner: owner,
+            options: options,
+            observationIsolation: observationIsolation,
+            callbackIsolation: apply.isolation
+        )
+
+        if let slot = slots[id] as? ObservationScopeSlot<Owner>,
+           slot.isActive,
+           slot.descriptor == descriptor {
+            slot.update(apply)
             return
         }
 
-        transactionDeclarations = [:]
-        body()
-        let declarations = transactionDeclarations ?? [:]
-        transactionDeclarations = nil
-
-        apply(declarations, cancelsMissingSlots: true)
-    }
-
-    /// Cancels the observation with the supplied explicit identifier.
-    ///
-    /// Use this only for registrations created with the same `id:` value. Observations without an
-    /// explicit identifier use a call-site-based identity and are usually managed by ``update(_:)``
-    /// or ``cancelAll()``.
-    ///
-    /// - Parameter id: The explicit identifier passed to `observe` or `observeTask`.
-    public func cancel(id: some Hashable) {
-        let id = AnyHashable(id)
-        transactionDeclarations?.removeValue(forKey: id)
-        if creatingSlotCounts[id] != nil || pendingDeclarationTokens[id] != nil {
-            cancelledSlotCreationIDs.insert(id)
-        }
-        if let slot = slots.removeValue(forKey: id) {
-            slot.cancel()
-        }
+        slots.removeValue(forKey: id)?.cancel()
+        slots[id] = makeObservationSlot(
+            owner: owner,
+            descriptor: descriptor,
+            options: options,
+            isolation: observationIsolation,
+            apply: apply
+        )
     }
 
     /// Cancels every observation currently owned by the scope.
     public func cancelAll() {
-        transactionDeclarations?.removeAll(keepingCapacity: true)
         let currentSlots = Array(slots.values)
         slots.removeAll(keepingCapacity: true)
-        if !creatingSlotCounts.isEmpty {
-            cancelsAllDuringSlotCreation = true
-            cancelledSlotCreationIDs.formUnion(creatingSlotCounts.keys)
-        }
 
         for slot in currentSlots {
             slot.cancel()
@@ -74,168 +77,116 @@ public final class ObservationScope {
         cancelAll()
     }
 
-    func store(_ declaration: ObservationScopeDeclaration) {
-        if transactionDeclarations != nil {
-            transactionDeclarations?[declaration.id] = declaration
-            return
+    private func makeObservationSlot<Owner: AnyObject & Observable>(
+        owner: Owner,
+        descriptor: ObservationScopeDescriptor,
+        options: ObservationOptions,
+        isolation: (any Actor)?,
+        apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
+    ) -> ObservationScopeSlot<Owner> {
+        let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+        let state = ScopedObservationState()
+        let lifetime = ObservationExecutionLifetime()
+        let callbackBox = ObservationScopeCallbackBox(apply)
+        let runner: any ScopedObservationRunner = TypedScopedObservationRunner(callbackBox: callbackBox)
+        lifetime.addCancellationHandler {
+            WeakOwnerRegistry.removeToken(ownerToken)
+        }
+        lifetime.addCancellationHandler {
+            state.terminate()
         }
 
-        apply([declaration.id: declaration], cancelsMissingSlots: false)
-    }
-
-    private func apply(
-        _ declarations: [AnyHashable: ObservationScopeDeclaration],
-        cancelsMissingSlots: Bool
-    ) {
-        let declarationIDs = Array(declarations.keys)
-        invalidatePendingDeclarations(for: declarationIDs)
-        let pendingTokens = beginPendingDeclarations(declarationIDs)
-        defer {
-            endPendingDeclarations(pendingTokens, clearsCancellation: true)
-        }
-
-        for (id, declaration) in declarations {
-            let token = pendingTokens[id]
-            let isSuperseded = token.map { invalidatedPendingDeclarationTokens.remove($0) != nil } ?? false
-            if let token {
-                endPendingDeclaration(id: id, token: token, clearsCancellation: false)
-            }
-            if isSuperseded {
-                clearCancelledSlotCreationIDIfInactive(id: id)
-                continue
+        let monitorTask = makeObservationTask {
+            defer {
+                lifetime.cancel()
             }
 
-            if cancelledSlotCreationIDs.contains(id) {
-                slots.removeValue(forKey: id)?.cancel()
-                clearCancelledSlotCreationIDIfInactive(id: id)
-                continue
-            }
-
-            if let slot = slots[id],
-               slot.matches(declaration.descriptor),
-               declaration.update(slot) {
-                continue
-            }
-
-            slots.removeValue(forKey: id)?.cancel()
-            guard makeAndStoreSlot(id: id, declaration: declaration) else {
-                break
-            }
-        }
-
-        guard cancelsMissingSlots else {
-            return
-        }
-
-        let activeIDs = Set(declarations.keys)
-        let missingCreatingIDs = creatingSlotCounts.keys.filter { !activeIDs.contains($0) }
-        cancelledSlotCreationIDs.formUnion(missingCreatingIDs)
-
-        let inactiveIDs = slots.keys.filter { !activeIDs.contains($0) }
-        for id in inactiveIDs {
-            slots.removeValue(forKey: id)?.cancel()
-        }
-    }
-
-    private func makeAndStoreSlot(
-        id: AnyHashable,
-        declaration: ObservationScopeDeclaration
-    ) -> Bool {
-        creatingSlotCounts[id, default: 0] += 1
-        let slot = declaration.makeSlot()
-        endCreatingSlot(id: id)
-
-        let wasCancelled = cancelsAllDuringSlotCreation || cancelledSlotCreationIDs.contains(id)
-        let wasSuperseded = slots[id] != nil
-        let shouldCancel = wasCancelled || wasSuperseded
-        if shouldCancel {
-            slot?.cancel()
-        } else if let slot {
-            slots[id] = slot
-        }
-
-        if creatingSlotCounts[id] == nil {
-            clearCancelledSlotCreationIDIfInactive(id: id)
-        }
-
-        let shouldContinue = !cancelsAllDuringSlotCreation
-        if creatingSlotCounts.isEmpty, cancelsAllDuringSlotCreation {
-            cancelsAllDuringSlotCreation = false
-            cancelledSlotCreationIDs.removeAll(keepingCapacity: true)
-        }
-        return shouldContinue
-    }
-
-    private func endCreatingSlot(id: AnyHashable) {
-        guard let count = creatingSlotCounts[id] else {
-            return
-        }
-        if count == 1 {
-            creatingSlotCounts.removeValue(forKey: id)
-        } else {
-            creatingSlotCounts[id] = count - 1
-        }
-    }
-
-    private func invalidatePendingDeclarations(for ids: some Sequence<AnyHashable>) {
-        for id in ids {
-            if let tokens = pendingDeclarationTokens[id] {
-                invalidatedPendingDeclarationTokens.formUnion(tokens)
-            }
-        }
-    }
-
-    private func beginPendingDeclarations(_ ids: some Sequence<AnyHashable>) -> [AnyHashable: UInt64] {
-        var tokensByID: [AnyHashable: UInt64] = [:]
-        for id in ids {
-            nextPendingDeclarationToken += 1
-            let token = nextPendingDeclarationToken
-            pendingDeclarationTokens[id, default: []].append(token)
-            tokensByID[id] = token
-        }
-        return tokensByID
-    }
-
-    private func endPendingDeclarations(
-        _ tokensByID: [AnyHashable: UInt64],
-        clearsCancellation: Bool
-    ) {
-        for (id, token) in tokensByID {
-            endPendingDeclaration(
-                id: id,
-                token: token,
-                clearsCancellation: clearsCancellation
+            await runner.run(
+                ownerToken: ownerToken,
+                options: options,
+                isolation: isolation,
+                state: state
             )
         }
-    }
 
-    private func endPendingDeclaration(
-        id: AnyHashable,
-        token: UInt64,
-        clearsCancellation: Bool
-    ) {
-        guard var tokens = pendingDeclarationTokens[id],
-              let index = tokens.firstIndex(of: token)
-        else {
-            return
+        let handle = ObservationHandle {
+            monitorTask.cancel()
+            lifetime.cancel()
+        }
+        OwnerCancellationRegistry.register(handle, owner: owner)
+
+        return ObservationScopeSlot(
+            descriptor: descriptor,
+            state: state,
+            handle: handle,
+            callbackBox: callbackBox
+        )
+    }
+}
+
+func runScopedObservationLoop<Owner: AnyObject & Observable>(
+    ownerToken: UInt64,
+    options: ObservationOptions,
+    isolation: (any Actor)?,
+    state: ScopedObservationState,
+    callbackBox: ObservationScopeCallbackBox<Owner>
+) async {
+    var kind = ObservationEvent.Kind.initial
+
+    while !Task.isCancelled {
+        guard await trackScopedObservation(
+            ownerToken: ownerToken,
+            kind: kind,
+            isolation: isolation,
+            state: state,
+            callbackBox: callbackBox
+        ) else {
+            break
         }
 
-        tokens.remove(at: index)
-        invalidatedPendingDeclarationTokens.remove(token)
-
-        if tokens.isEmpty {
-            pendingDeclarationTokens.removeValue(forKey: id)
-            if clearsCancellation {
-                clearCancelledSlotCreationIDIfInactive(id: id)
-            }
-        } else {
-            pendingDeclarationTokens[id] = tokens
+        guard options.contains(.didSet) else {
+            break
         }
+
+        guard await state.waitForChange() else {
+            break
+        }
+
+        kind = .didSet
     }
 
-    private func clearCancelledSlotCreationIDIfInactive(id: AnyHashable) {
-        if creatingSlotCounts[id] == nil, pendingDeclarationTokens[id] == nil {
-            cancelledSlotCreationIDs.remove(id)
+    state.terminate()
+}
+
+private func trackScopedObservation<Owner: AnyObject & Observable>(
+    ownerToken: UInt64,
+    kind: ObservationEvent.Kind,
+    isolation: (any Actor)?,
+    state: ScopedObservationState,
+    callbackBox: ObservationScopeCallbackBox<Owner>
+) async -> Bool {
+    await withObservationIsolation(isolation: isolation) {
+        guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
+            return false
         }
+
+        let event = ObservationEvent(kind: kind) {
+            state.terminate()
+        }
+
+        withObservationTracking {
+            callbackBox.call(event: event, owner: owner)
+        } onChange: {
+            state.emitChange()
+        }
+
+        return !state.isTerminated
     }
+}
+
+private func withObservationIsolation<T>(
+    isolation: isolated (any Actor)?,
+    _ operation: () -> T
+) -> T {
+    operation()
 }

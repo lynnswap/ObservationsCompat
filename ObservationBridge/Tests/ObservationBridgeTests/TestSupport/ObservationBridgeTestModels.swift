@@ -71,20 +71,8 @@ final class MainActorObservationScopeHolder {
 final class ObservationScopeCancellationProbe: @unchecked Sendable {
     let observations = ObservationScope()
 
-    func cancel(id: String) {
-        observations.cancel(id: id)
-    }
-
     func cancelAll() {
         observations.cancelAll()
-    }
-}
-
-extension ObservationRegistration {
-    func storedForTest() -> ObservationScope {
-        let observations = ObservationScope()
-        store(in: observations)
-        return observations
     }
 }
 
