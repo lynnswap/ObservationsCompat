@@ -46,6 +46,7 @@ The callback body is the tracking body. Every observable property read from
 
 `ObservationOptions` controls which later events are delivered:
 
+```swift
 observations.observe(model, options: .didSet) { event, model in
     render(model)
 }
