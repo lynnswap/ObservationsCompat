@@ -64,12 +64,6 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
         }
     }
 
-    func update(
-        _ callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
-    ) {
-        callbackBox.update(callback)
-    }
-
     func cancel() {
         handle.cancel()
     }

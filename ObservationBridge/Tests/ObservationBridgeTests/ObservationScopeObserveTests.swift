@@ -135,9 +135,48 @@ final class ObservationScopeObserveTests {
             recorder: recorder
         )
 
-        model.value = 1
         #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot() == ["first:initial:0", "second:didSet:1"])
+        model.value = 1
+        #expect(await waitUntilCount(3, in: recorder))
+        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0", "second:didSet:1"])
+    }
+
+    @Test
+    func repeatedObserveFromSameCallSiteRetracksReplacementCallbackBody() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<String>()
+        defer { observations.cancelAll() }
+
+        installReplacingObservation(
+            observations: observations,
+            model: model,
+            readTarget: .value,
+            label: "value",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(1, in: recorder))
+
+        installReplacingObservation(
+            observations: observations,
+            model: model,
+            readTarget: .isEnabled,
+            label: "enabled",
+            recorder: recorder
+        )
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.isEnabled = true
+        #expect(await waitUntilCount(3, in: recorder))
+        model.value = 1
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(
+            recorder.snapshot() == [
+                "value:initial:value:0",
+                "enabled:initial:isEnabled:false",
+                "enabled:didSet:isEnabled:true",
+            ]
+        )
     }
 
     @Test
@@ -269,6 +308,11 @@ final class ObservationScopeObserveTests {
     }
 }
 
+private enum ReplacementReadTarget {
+    case value
+    case isEnabled
+}
+
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
@@ -278,5 +322,22 @@ private func installReplacingObservation(
 ) {
     observations.observe(model, options: options) { event, model in
         recorder.append("\(label):\(event.kind):\(model.value)")
+    }
+}
+
+private func installReplacingObservation(
+    observations: ObservationScope,
+    model: CounterModel,
+    readTarget: ReplacementReadTarget,
+    label: String,
+    recorder: ValueRecorder<String>
+) {
+    observations.observe(model) { event, model in
+        switch readTarget {
+        case .value:
+            recorder.append("\(label):\(event.kind):value:\(model.value)")
+        case .isEnabled:
+            recorder.append("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
+        }
     }
 }

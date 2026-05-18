@@ -15,7 +15,7 @@ public final class ObservationScope {
     ///
     /// The callback body is the tracking body: every observable property read from `owner` inside
     /// `apply` becomes part of the observation. Calling the same observation again from the same
-    /// call site replaces the callback instead of creating a duplicate pipeline.
+    /// call site replaces the existing pipeline so the new callback body is tracked immediately.
     ///
     /// - Parameters:
     ///   - owner: The observable object whose properties are read by `apply`.
@@ -44,13 +44,6 @@ public final class ObservationScope {
             observationIsolation: observationIsolation,
             callbackIsolation: apply.isolation
         )
-
-        if let slot = slots[id] as? ObservationScopeSlot<Owner>,
-           slot.isActive,
-           slot.descriptor == descriptor {
-            slot.update(apply)
-            return
-        }
 
         slots.removeValue(forKey: id)?.cancel()
         slots[id] = makeObservationSlot(
