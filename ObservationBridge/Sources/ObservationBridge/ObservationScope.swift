@@ -296,7 +296,7 @@ private var canUseObservationTrackingDidSetSPI: Bool {
         return false
     }
 
-    #if arch(arm64)
+    #if arch(arm64) || arch(x86_64)
     return observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
     #else
     return false
