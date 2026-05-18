@@ -12,7 +12,7 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
     weak var model: DeinitProbeCounterModel?
 }
 
-@Suite
+@Suite(.serialized)
 final class ObservationScopeObserveTests {
     @Test
     func observationEventKindStaticValuesAreEquatable() {
@@ -20,7 +20,6 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.didSet == .didSet)
         #expect(ObservationEvent.Kind.initial != .didSet)
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
-        #expect(String(describing: ObservationEvent.Kind.legacyWillSet) == "willSet")
     }
 
     @Test
@@ -74,6 +73,35 @@ final class ObservationScopeObserveTests {
         model.value = 7
         #expect(await waitUntilCount(2, in: recorder))
         #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 7, isEnabled: false))
+    }
+
+    @Test
+    func publicDidSetFallbackKeepsDidSetEventKind() async {
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<ScopePass>()
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { event, model in
+            recorder.append(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+        }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 11
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 11, isEnabled: false))
     }
 
     @Test

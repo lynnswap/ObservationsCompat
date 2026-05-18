@@ -233,13 +233,19 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
         }
 
         if changeKind == .didSet {
-            guard withObservationTrackingDidSetIfAvailable({
+            let usedDidSetSPI = withObservationTrackingDidSetIfAvailable({
                 callbackBox.call(event: event, owner: owner)
             }, didSet: { tracking in
                 state.emitChange()
                 cancelObservationTrackingIfAvailable(tracking)
-            }) else {
-                return false
+            })
+
+            if !usedDidSetSPI {
+                withObservationTracking {
+                    callbackBox.call(event: event, owner: owner)
+                } onChange: {
+                    state.emitDeferredChange()
+                }
             }
         } else {
             withObservationTracking {
@@ -258,11 +264,7 @@ private func legacyChangeKind(for options: ObservationOptions) -> ObservationEve
         return nil
     }
 
-    if canUseObservationTrackingDidSetSPI {
-        return .didSet
-    }
-
-    return .legacyWillSet
+    return .didSet
 }
 
 private func withObservationIsolation<T: Sendable>(
@@ -294,11 +296,19 @@ private let observationTrackingCancelAddress: UInt? =
         .map { UInt(bitPattern: $0) }
 
 private var canUseObservationTrackingDidSetSPI: Bool {
+    if _ObservationScopeTesting.forcePublicDidSetFallback.withLock({ $0 }) {
+        return false
+    }
+
     #if arch(arm64)
-    observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
+    return observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
     #else
-    false
+    return false
     #endif
+}
+
+enum _ObservationScopeTesting {
+    static let forcePublicDidSetFallback = Mutex(false)
 }
 
 private func withObservationTrackingDidSetIfAvailable(
