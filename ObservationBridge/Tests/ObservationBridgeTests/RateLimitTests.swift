@@ -148,6 +148,7 @@ final class RateLimitTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
 
         clock.advance(by: .milliseconds(200))
-        #expect(await nextWithTimeout(from: queue) == 10)
+        let throttledValue = await nextWithTimeout(from: queue)
+        #expect(throttledValue == 10)
     }
 }

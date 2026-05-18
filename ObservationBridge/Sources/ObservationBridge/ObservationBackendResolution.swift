@@ -227,12 +227,23 @@ private func drainNativeObservationValues<Value: Sendable>(
     continuation: AsyncStream<Value>.Continuation
 ) async {
     let observations = Observations(observe)
-    var iterator = observations.makeAsyncIterator()
+    // Start the next native observation before publishing the current value. `AsyncStream`
+    // may resume a waiting consumer synchronously from `yield`, so registering afterward
+    // can lose mutations made by that consumer. The pending task is the sole owner of the
+    // iterator until its value is awaited below.
+    nonisolated(unsafe) var iterator = observations.makeAsyncIterator()
+    let resolvedIsolation: (any Actor)? = isolation
 
-    while let value = await iterator.next(isolation: isolation) {
+    var nextValue = unsafe await iterator.next(isolation: isolation)
+    while let value = nextValue {
+        let pendingValue = Task {
+            unsafe await iterator.next(isolation: resolvedIsolation)
+        }
         if Task.isCancelled {
+            pendingValue.cancel()
             break
         }
         continuation.yield(value)
+        nextValue = await pendingValue.value
     }
 }

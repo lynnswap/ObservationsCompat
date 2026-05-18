@@ -50,7 +50,7 @@ final class ObservationBridgeSequenceTests {
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        let latestValue = 100
+        let latestValue = stressIterationCount(local: 500, ci: 100)
         for value in 1...latestValue {
             model.value = value
         }
@@ -83,7 +83,7 @@ final class ObservationBridgeSequenceTests {
 
         #expect(await nextWithTimeout(from: queue) == 0)
 
-        for _ in 0..<100 {
+        for _ in 0..<stressIterationCount(local: 1_000, ci: 100) {
             model.value = 1
         }
 

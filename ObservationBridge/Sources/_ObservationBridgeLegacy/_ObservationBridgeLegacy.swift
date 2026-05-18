@@ -1,5 +1,8 @@
+import Darwin
+import Foundation
 import Observation
 import Synchronization
+import _ObservationBridgePrivateABI
 
 package func makeLegacyObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
@@ -95,12 +98,41 @@ private func trackLegacyValue<Value: Sendable>(
     observationState: LegacyObservationState
 ) async -> Value {
     await withObservationIsolation(isolation: isolation) {
-        withObservationTracking({
+        if let value = trackLegacyValueWithDidSetIfAvailable(
+            observe: observe,
+            observationState: observationState
+        ) {
+            return value
+        }
+
+        return withObservationTracking({
             callIsolatedWithFastPath(observe)
         }, onChange: {
             observationState.emitWillChange()
         })
     }
+}
+
+private func trackLegacyValueWithDidSetIfAvailable<Value: Sendable>(
+    observe: @escaping @isolated(any) @Sendable () -> Value,
+    observationState: LegacyObservationState
+) -> Value? {
+    guard canUseObservationTrackingDidSetSPI, let observationTrackingDidSetFunction else {
+        return nil
+    }
+
+    var observedValue: Value?
+    observationTrackingDidSetFunction({
+        observedValue = callIsolatedWithFastPath(observe)
+    }, { tracking in
+        observationState.emitChange()
+        cancelObservationTrackingIfAvailable(tracking)
+    })
+
+    guard let observedValue else {
+        preconditionFailure("legacy observation didSet tracking did not produce a value")
+    }
+    return observedValue
 }
 
 @inline(__always)
@@ -151,6 +183,63 @@ private func withObservationIsolation<T>(
     operation()
 }
 
+// `ObservationTracking` is hidden from the Swift 6.2 public interface even though the
+// didSet SPI passes it to this closure. Use a resilient imported value as the opaque
+// ABI carrier so Swift forwards the hidden value with the same indirect convention.
+private typealias OpaqueObservationTracking = URL
+
+private typealias ObservationTrackingDidSetFunction = @convention(thin) (
+    () -> Void,
+    @Sendable (OpaqueObservationTracking) -> Void
+) -> Void
+
+private let observationTrackingDidSetFunction: ObservationTrackingDidSetFunction? =
+    unsafe lookupObservationSymbol(
+        "$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF",
+        as: ObservationTrackingDidSetFunction.self
+    )
+
+private let observationTrackingCancelAddress: UInt? =
+    unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
+        .map { UInt(bitPattern: $0) }
+
+private var canUseObservationTrackingDidSetSPI: Bool {
+    #if arch(arm64) || arch(x86_64)
+    return observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
+    #else
+    return false
+    #endif
+}
+
+private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationTracking) {
+    guard
+        let observationTrackingCancelAddress,
+        let observationTrackingCancelFunction = unsafe UnsafeMutableRawPointer(
+            bitPattern: observationTrackingCancelAddress
+        )
+    else {
+        return
+    }
+
+    unsafe withUnsafePointer(to: tracking) { trackingPointer in
+        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
+    }
+}
+
+private func lookupObservationSymbol<T>(
+    _ name: UnsafePointer<CChar>,
+    as type: T.Type
+) -> T? {
+    guard let symbol = unsafe lookupObservationSymbol(name) else {
+        return nil
+    }
+    return unsafe unsafeBitCast(symbol, to: type)
+}
+
+private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
+    unsafe dlsym(unsafe UnsafeMutableRawPointer(bitPattern: -2), name)
+}
+
 private final class LegacyObservationState: @unchecked Sendable {
     private struct State {
         var dirty = false
@@ -165,6 +254,10 @@ private final class LegacyObservationState: @unchecked Sendable {
     }
 
     private let state = Mutex(State())
+
+    func emitChange() {
+        emitWillChange()
+    }
 
     func emitWillChange() {
         let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
