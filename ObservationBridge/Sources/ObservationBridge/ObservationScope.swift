@@ -54,12 +54,6 @@ public final class ObservationScope {
         )
         slots[id] = slot
         slot.start()
-
-        if !slot.isActive,
-           let currentSlot = slots[id],
-           currentSlot === slot {
-            slots.removeValue(forKey: id)
-        }
     }
 
     /// Cancels every observation currently owned by the scope.
