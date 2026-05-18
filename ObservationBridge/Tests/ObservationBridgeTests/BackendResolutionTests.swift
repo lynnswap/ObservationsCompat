@@ -6,11 +6,12 @@ import Testing
 
 @Suite
 final class BackendResolutionTests {
+    @MainActor
     @Test
     func defaultBackendUsesLegacyUntilNativeContinuousObservationBackendExists() async {
         #expect(resolveBackend(options: ObservationStreamOptions()) == .legacy)
 
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge {
             model.value
         }

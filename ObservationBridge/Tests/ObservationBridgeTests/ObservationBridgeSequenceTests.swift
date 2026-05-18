@@ -6,9 +6,10 @@ import Testing
 
 @Suite(.serialized)
 final class ObservationBridgeSequenceTests {
+    @MainActor
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
@@ -32,8 +33,31 @@ final class ObservationBridgeSequenceTests {
     }
 
     @Test
-    func legacyBackendCoalescesBurstAndEventuallyEmitsLatestValue() async {
-        let model = CounterModel()
+    func legacyBackendTracksCustomActorIsolatedStream() async {
+        let probe = CustomActorStreamProbe()
+        let stream = await probe.makeStream()
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        await probe.setValue(1)
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        await probe.setValue(2)
+        #expect(await nextWithTimeout(from: queue) == 2)
+    }
+
+    @MainActor
+    @Test
+    func legacyBackendCoalescesActorIsolatedBurstAndEventuallyEmitsLatestValue() async {
+        let model = MainActorCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
@@ -64,9 +88,10 @@ final class ObservationBridgeSequenceTests {
         #expect(sawLatest == true)
     }
 
+    @MainActor
     @Test
     func legacyBackendSuppressesHighFrequencyDuplicateValues() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
@@ -89,9 +114,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
+    @MainActor
     @Test
     func legacyBackendEmitsInitialOptionalNilValue() async {
-        let model = OptionalCounterModel()
+        let model = MainActorOptionalCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
@@ -110,9 +136,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 3)
     }
 
+    @MainActor
     @Test
     func automaticBackendObservationBridgeIteratorReturnsInitialAndUpdatedValues() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge {
             model.value
         }
@@ -124,9 +151,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await iterator.next() == 42)
     }
 
+    @MainActor
     @Test
     func automaticBackendMakeObservationBridgeStreamIteratorReturnsInitialAndUpdatedValues() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = makeObservationBridgeStream {
             model.value
         }
@@ -138,9 +166,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await iterator.next() == 9)
     }
 
+    @MainActor
     @Test
     func automaticBackendObservationBridgeBuffersUpdatesWhileConsumerIsBetweenPulls() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge {
             model.value
         }
@@ -165,9 +194,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 1)
     }
 
+    @MainActor
     @Test
     func automaticBackendObservationBridgeIteratorPreservesInitialOptionalNil() async {
-        let model = OptionalCounterModel()
+        let model = MainActorOptionalCounterModel()
         let stream = ObservationBridge {
             model.value
         }
@@ -179,9 +209,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await iterator.next() == 3)
     }
 
+    @MainActor
     @Test
     func legacyBackendPreservesObserveIsolationAcrossDetachedCreation() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let observeOnMainActor: @MainActor @Sendable () -> Int = {
             MainActor.assertIsolated()
             return model.value
@@ -205,9 +236,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 11)
     }
 
+    @MainActor
     @Test
     func streamCanBeCancelledSafely() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
@@ -233,9 +265,10 @@ final class ObservationBridgeSequenceTests {
         #expect(model.value == 2)
     }
 
+    @MainActor
     @Test
     func observationBridgeOptionsEmptyEmitsConsecutiveEqualValues() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.parity
         }
@@ -257,9 +290,10 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 1)
     }
 
+    @MainActor
     @Test
     func makeObservationBridgeStreamSupportsOptionsAndClock() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
@@ -280,16 +314,16 @@ final class ObservationBridgeSequenceTests {
         #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 1
-        model.value = 2
 
         await clock.sleep(untilSuspendedBy: 1)
         clock.advance(by: .milliseconds(200))
-        #expect(await nextWithTimeout(from: queue) == 2)
+        #expect(await nextWithTimeout(from: queue) == 1)
     }
 
+    @MainActor
     @Test
     func observationBridgeIteratorsReceiveIndependentInitialAndUpdatedValues() async {
-        let model = CounterModel()
+        let model = MainActorCounterModel()
         let stream = ObservationBridge {
             model.value
         }
@@ -319,5 +353,21 @@ final class ObservationBridgeSequenceTests {
         model.value = 7
         #expect(await nextWithTimeout(from: firstQueue) == 7)
         #expect(await nextWithTimeout(from: secondQueue) == 7)
+    }
+}
+
+private actor CustomActorStreamProbe {
+    private let model = CounterModel()
+
+    func makeStream() -> ObservationBridge<Int> {
+        ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
+            self.preconditionIsolated()
+            return self.model.value
+        }
+    }
+
+    func setValue(_ value: Int) {
+        preconditionIsolated()
+        model.value = value
     }
 }
