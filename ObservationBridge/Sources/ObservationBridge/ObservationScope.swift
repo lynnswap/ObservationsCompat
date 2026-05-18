@@ -1,3 +1,4 @@
+import Foundation
 import Observation
 import Synchronization
 
@@ -232,8 +233,9 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
         if changeKind == .didSet {
             withObservationTrackingDidSet {
                 callbackBox.call(event: event, owner: owner)
-            } didSet: { _ in
+            } didSet: { tracking in
                 state.emitChange()
+                tracking.cancelObservationTracking()
             }
         } else {
             withObservationTracking {
@@ -255,7 +257,15 @@ private func withObservationIsolation<T: Sendable>(
     return operation()
 }
 
-private struct OpaqueObservationTracking: Sendable {}
+// `ObservationTracking` is hidden from the Swift 6.2 public interface even though the
+// didSet SPI passes it to this closure. Use a resilient imported value as the opaque
+// ABI carrier so Swift forwards the hidden value with the same indirect convention.
+private typealias OpaqueObservationTracking = URL
+
+extension OpaqueObservationTracking {
+    @_silgen_name("$s11Observation0A8TrackingV6cancelyyF")
+    fileprivate func cancelObservationTracking()
+}
 
 @_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
 private func withObservationTrackingDidSet<T>(

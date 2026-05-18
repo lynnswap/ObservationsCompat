@@ -76,6 +76,41 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func didSetTrackingIsCancelledAfterEachChange() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let recorder = ValueRecorder<ScopePass>()
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { event, model in
+            recorder.append(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+        }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = 2
+        #expect(await waitUntilCount(3, in: recorder))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(
+            recorder.snapshot() == [
+                ScopePass(kind: .initial, value: 0, isEnabled: false),
+                ScopePass(kind: .didSet, value: 1, isEnabled: false),
+                ScopePass(kind: .didSet, value: 2, isEnabled: false),
+            ]
+        )
+    }
+
+    @Test
     func emptyOptionsDeliverOnlyInitialEvent() async {
         let model = CounterModel()
         let observations = ObservationScope()
