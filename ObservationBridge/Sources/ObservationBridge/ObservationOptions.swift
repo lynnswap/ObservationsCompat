@@ -88,14 +88,27 @@ public enum ObservationBackend: Sendable, Hashable {
 public struct ObservationOptions: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
+    /// Re-runs the observation callback when observed state is about to change.
+    public static let willSet = ObservationOptions(rawValue: 1 << 0)
+
     /// Re-runs the observation callback after observed state changes.
-    public static let didSet = ObservationOptions(rawValue: 1 << 0)
+    public static let didSet = ObservationOptions(rawValue: 1 << 1)
 
     /// Creates observation options from a raw value.
     ///
     /// An empty option set delivers only the initial observation callback.
     public init(rawValue: UInt8) {
         self.rawValue = rawValue
+    }
+
+    var legacyChangeKind: ObservationEvent.Kind? {
+        if contains(.willSet) {
+            return .willSet
+        }
+        if contains(.didSet) {
+            return .didSet
+        }
+        return nil
     }
 }
 

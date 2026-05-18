@@ -131,10 +131,30 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
     state: ScopedObservationState,
     callbackBox: ObservationScopeCallbackBox<Owner>
 ) async {
+    #if compiler(>=6.4)
+    #error("Replace the legacy owner-bound runner with native withContinuousObservation(options:apply:) and ObservationTracking.Event forwarding.")
+    #else
+    await runLegacyScopedObservationLoop(
+        ownerToken: ownerToken,
+        options: options,
+        isolation: isolation,
+        state: state,
+        callbackBox: callbackBox
+    )
+    #endif
+}
+
+private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
+    ownerToken: UInt64,
+    options: ObservationOptions,
+    isolation: (any Actor)?,
+    state: ScopedObservationState,
+    callbackBox: ObservationScopeCallbackBox<Owner>
+) async {
     var kind = ObservationEvent.Kind.initial
 
     while !Task.isCancelled {
-        guard await trackScopedObservation(
+        guard await trackLegacyScopedObservation(
             ownerToken: ownerToken,
             kind: kind,
             isolation: isolation,
@@ -144,7 +164,7 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
             break
         }
 
-        guard options.contains(.didSet) else {
+        guard let changeKind = options.legacyChangeKind else {
             break
         }
 
@@ -152,13 +172,13 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
             break
         }
 
-        kind = .didSet
+        kind = changeKind
     }
 
     state.terminate()
 }
 
-private func trackScopedObservation<Owner: AnyObject & Observable>(
+private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
     ownerToken: UInt64,
     kind: ObservationEvent.Kind,
     isolation: (any Actor)?,
