@@ -22,8 +22,14 @@ concurrency:
 
 jobs:
   macos-tests:
-    name: Package Tests (macOS)
-    runs-on: macos-26
+    name: Package Tests (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-15
+          - macos-26
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
       XCODE_MAJOR: '26'
