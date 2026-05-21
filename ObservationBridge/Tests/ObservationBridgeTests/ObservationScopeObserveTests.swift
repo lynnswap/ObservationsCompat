@@ -41,7 +41,6 @@ final class ObservationScopeObserveTests {
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
         #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
 
         model.value = 1
@@ -384,7 +383,7 @@ final class ObservationScopeObserveTests {
             handle: handle,
             taskBox: taskBox,
             callbackBox: ObservationScopeCallbackBox<CounterModel> { _, _ in }
-        ) {
+        ) { _ in
             recorder.append("started")
             return Task {}
         }

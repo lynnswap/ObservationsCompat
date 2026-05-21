@@ -21,13 +21,20 @@ struct ObservationScopeDescriptor: Equatable, Sendable {
     ) {
         self.ownerID = ObjectIdentifier(owner)
         self.options = options
-        self.observationIsolationID = Self.actorID(observationIsolation)
-        self.callbackIsolationID = Self.actorID(callbackIsolation)
+        self.observationIsolationID = observationScopeActorID(observationIsolation)
+        self.callbackIsolationID = observationScopeActorID(callbackIsolation)
     }
+}
 
-    private static func actorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
-        actor.map { ObjectIdentifier($0 as AnyObject) }
-    }
+func observationScopeActorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
+    actor.map { ObjectIdentifier($0 as AnyObject) }
+}
+
+typealias ObservationScopeStartOperation = @Sendable (isolated (any Actor)?) -> Task<Void, Never>?
+
+enum InitialLegacyScopedObservationResult: Sendable {
+    case waitingForChange(ObservationEvent.Kind)
+    case finished
 }
 
 protocol ObservationScopeSlotProtocol: AnyObject, Sendable {
@@ -35,6 +42,7 @@ protocol ObservationScopeSlotProtocol: AnyObject, Sendable {
     var isActive: Bool { get }
 
     func reserveStart() -> (@Sendable () -> Void)?
+    func start(isolation: isolated (any Actor)?)
     func cancel()
 }
 
@@ -48,7 +56,7 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
     private let state: ScopedObservationState
     private let handle: ObservationHandle
     private let taskBox: ObservationTaskBox
-    private let startOperation: Mutex<(@Sendable () -> Task<Void, Never>)?>
+    private let startOperation: Mutex<ObservationScopeStartOperation?>
 
     var isActive: Bool {
         !state.isTerminated
@@ -60,7 +68,7 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
         handle: ObservationHandle,
         taskBox: ObservationTaskBox,
         callbackBox: ObservationScopeCallbackBox<Owner>,
-        startOperation: @escaping @Sendable () -> Task<Void, Never>
+        startOperation: @escaping ObservationScopeStartOperation
     ) {
         self.descriptor = descriptor
         self.state = state
@@ -75,11 +83,7 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
     }
 
     func reserveStart() -> (@Sendable () -> Void)? {
-        guard let operation = startOperation.withLock({ state in
-            let operation = state
-            state = nil
-            return operation
-        }) else {
+        guard let operation = takeStartOperation() else {
             return nil
         }
 
@@ -92,17 +96,40 @@ final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol
                 return
             }
 
-            let task = operation()
+            if let task = operation(nil) {
+                taskBox.replace(with: task)
+            }
+        }
+    }
+
+    func start(isolation: isolated (any Actor)?) {
+        guard let operation = takeStartOperation() else {
+            return
+        }
+
+        guard isActive else {
+            return
+        }
+
+        if let task = operation(isolation) {
             taskBox.replace(with: task)
         }
     }
 
     func start() {
-        reserveStart()?()
+        start(isolation: nil)
     }
 
     func cancel() {
         handle.cancel()
+    }
+
+    private func takeStartOperation() -> ObservationScopeStartOperation? {
+        startOperation.withLock { state in
+            let operation = state
+            state = nil
+            return operation
+        }
     }
 }
 
@@ -152,6 +179,21 @@ protocol ScopedObservationRunner: Sendable {
         isolation: (any Actor)?,
         state: ScopedObservationState
     ) async
+
+    func runInitialPass(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: isolated (any Actor)?,
+        state: ScopedObservationState
+    ) -> InitialLegacyScopedObservationResult
+
+    func runAfterInitialPass(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: (any Actor)?,
+        state: ScopedObservationState,
+        nextKind: ObservationEvent.Kind
+    ) async
 }
 
 final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
@@ -173,6 +215,38 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             isolation: isolation,
             state: state,
             callbackBox: callbackBox
+        )
+    }
+
+    func runInitialPass(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: isolated (any Actor)?,
+        state: ScopedObservationState
+    ) -> InitialLegacyScopedObservationResult {
+        runInitialLegacyScopedObservationPass(
+            ownerToken: ownerToken,
+            options: options,
+            isolation: isolation,
+            state: state,
+            callbackBox: callbackBox
+        )
+    }
+
+    func runAfterInitialPass(
+        ownerToken: UInt64,
+        options: ObservationOptions,
+        isolation: (any Actor)?,
+        state: ScopedObservationState,
+        nextKind: ObservationEvent.Kind
+    ) async {
+        await runLegacyScopedObservationLoopAfterInitialPass(
+            ownerToken: ownerToken,
+            options: options,
+            isolation: isolation,
+            state: state,
+            callbackBox: callbackBox,
+            nextKind: nextKind
         )
     }
 }
